@@ -1,6 +1,6 @@
-export type PlayerColor = 'red' | 'green' | 'yellow' | 'purple';
+export type PlayerColor = 'red' | 'green' | 'yellow' | 'purple' | 'blue' | 'cyan' | 'orange' | 'pink';
 
-export const PLAYER_COLORS: PlayerColor[] = ['red', 'green', 'yellow', 'purple'];
+export const PLAYER_COLORS: PlayerColor[] = ['red', 'green', 'yellow', 'purple', 'blue', 'cyan', 'orange', 'pink'];
 
 export interface Player {
   id: string;
@@ -12,6 +12,15 @@ export interface Player {
   position: { x: number; z: number }; // grid position
   score: number;
   dashCooldown?: number;
+  blastCooldown?: number;
+  blastActive?: boolean; // true for one server tick when blast fires
+}
+
+export interface GravityWell {
+  id: string;
+  position: { x: number; z: number }; // world position
+  velocity: { x: number; z: number };
+  radius: number; // visual radius
 }
 
 export interface TileState {
@@ -32,6 +41,7 @@ export interface LobbyState {
   winner: string | null;   // player id (final match winner)
   nextTileFallIn: number;  // ms
   countdown?: number;
+  gravityWells: GravityWell[];
   // multi-round fields
   currentRound: number;
   maxRounds: number;
@@ -45,7 +55,7 @@ export type ClientMessage =
   | { type: 'rename'; playerName: string }
   | { type: 'start_game' }
   | { type: 'restart_game' }
-  | { type: 'input'; keys: { w: boolean; a: boolean; s: boolean; d: boolean; space: boolean } }
+  | { type: 'input'; keys: { w: boolean; a: boolean; s: boolean; d: boolean; space: boolean; shift: boolean } }
   | { type: 'ping' };
 
 // Server -> Client messages
@@ -59,13 +69,40 @@ export type ServerMessage =
   | { type: 'error'; message: string }
   | { type: 'pong' };
 
-export const ARENA_SIZE = 10;
+export const ARENA_SIZE = 16;
 export const TILE_SIZE = 2; // world units per tile
 export const PLAYER_SPEED = 0.08; // tiles per tick
 export const DASH_FORCE = 3.0;
 export const TICK_RATE = 50; // ms
 export const TILE_FALL_INTERVAL = 7000; // ms between tile falls (starts slower for longer rounds)
-export const TILES_PER_FALL = 2;
+export const TILES_PER_FALL = 4;
 export const TILE_CRUMBLE_WARNING = 2000;
 export const DASH_COOLDOWN_MS = 1200;
 export const MAX_ROUNDS = 5; // first to win ceil(MAX_ROUNDS/2) rounds wins the match
+export const MAX_PLAYERS = 8;
+export const BLAST_COOLDOWN_MS = 2500;
+export const BLAST_FORCE = 2.8;
+export const BLAST_RADIUS = 2.8;
+export const GRAVITY_WELL_PULL = 0.018;
+export const GRAVITY_WELL_INFLUENCE_RADIUS = 3.5;
+
+// Impassable wall cells in the 16×16 grid.
+// Layout: cross-shaped arms (4-wide gap in the centre) + 4 corner pillars.
+// Start positions (1,1) (14,1) (14,14) (1,14) (7,1) (14,7) (7,14) (1,7) are all clear.
+export const WALL_CELLS: Array<{ x: number; z: number }> = [
+  // vertical top arm (x=7 & 8, z=3-5)
+  { x: 7, z: 3 }, { x: 7, z: 4 }, { x: 7, z: 5 },
+  { x: 8, z: 3 }, { x: 8, z: 4 }, { x: 8, z: 5 },
+  // vertical bottom arm (x=7 & 8, z=10-12)
+  { x: 7, z: 10 }, { x: 7, z: 11 }, { x: 7, z: 12 },
+  { x: 8, z: 10 }, { x: 8, z: 11 }, { x: 8, z: 12 },
+  // horizontal left arm (z=7 & 8, x=3-5)
+  { x: 3, z: 7 }, { x: 4, z: 7 }, { x: 5, z: 7 },
+  { x: 3, z: 8 }, { x: 4, z: 8 }, { x: 5, z: 8 },
+  // horizontal right arm (z=7 & 8, x=10-12)
+  { x: 10, z: 7 }, { x: 11, z: 7 }, { x: 12, z: 7 },
+  { x: 10, z: 8 }, { x: 11, z: 8 }, { x: 12, z: 8 },
+  // corner pillars
+  { x: 4, z: 4 }, { x: 11, z: 4 },
+  { x: 4, z: 11 }, { x: 11, z: 11 },
+];

@@ -1,22 +1,24 @@
 import type {
   LobbyState, Player, TileState, ClientMessage, ServerMessage,
-  PlayerColor
+  PlayerColor, GravityWell
 } from '../shared/types';
 import {
   PLAYER_COLORS, ARENA_SIZE, PLAYER_SPEED, DASH_FORCE,
   TICK_RATE, TILES_PER_FALL, TILE_CRUMBLE_WARNING, DASH_COOLDOWN_MS,
-  MAX_ROUNDS
+  MAX_ROUNDS, MAX_PLAYERS, BLAST_COOLDOWN_MS, BLAST_FORCE, BLAST_RADIUS,
+  GRAVITY_WELL_PULL, GRAVITY_WELL_INFLUENCE_RADIUS, WALL_CELLS
 } from '../shared/types';
 
 interface PlayerSession {
   ws: WebSocket;
   playerId: string;
-  keys: { w: boolean; a: boolean; s: boolean; d: boolean; space: boolean };
+  keys: { w: boolean; a: boolean; s: boolean; d: boolean; space: boolean; shift: boolean };
   worldPos: { x: number; z: number }; // float world position
   velocity: { x: number; z: number };
   dashCooldown: number; // ms
   isDashing: boolean;   // true during active dash (for collision boost)
   dashActiveTimer: number; // ms remaining of dash-boost window
+  blastCooldown: number; // ms
 }
 
 export class GameLobby {
@@ -27,6 +29,8 @@ export class GameLobby {
   private lobbyId: string = '';
   private fallCount: number = 0;
   private countdownTimeouts: ReturnType<typeof setTimeout>[] = [];
+  // Fast lookup: "x,z" → true for every impassable wall cell
+  private readonly wallSet: Set<string> = new Set(WALL_CELLS.map(w => `${w.x},${w.z}`));
 
   constructor(state: DurableObjectState) {
     this.state = state;
@@ -42,6 +46,7 @@ export class GameLobby {
       gameTime: 0,
       winner: null,
       nextTileFallIn: 7000,
+      gravityWells: [],
       currentRound: 0,
       maxRounds: MAX_ROUNDS,
       roundScores: {},
@@ -129,7 +134,7 @@ export class GameLobby {
       this.send(ws, { type: 'error', message: 'Game already in progress' });
       return;
     }
-    if (this.lobbyState.players.length >= 4) {
+    if (this.lobbyState.players.length >= MAX_PLAYERS) {
       this.send(ws, { type: 'error', message: 'Lobby is full' });
       return;
     }
@@ -138,7 +143,8 @@ export class GameLobby {
     const color: PlayerColor = PLAYER_COLORS[colorIndex];
 
     const startPositions = [
-      { x: 1, z: 1 }, { x: 8, z: 8 }, { x: 1, z: 8 }, { x: 8, z: 1 }
+      { x: 1, z: 1 }, { x: 14, z: 1 }, { x: 14, z: 14 }, { x: 1, z: 14 },
+      { x: 7, z: 1 }, { x: 14, z: 7 }, { x: 7, z: 14 }, { x: 1, z: 7 },
     ];
     const startPos = startPositions[colorIndex];
 
@@ -158,12 +164,13 @@ export class GameLobby {
     const session: PlayerSession = {
       ws,
       playerId,
-      keys: { w: false, a: false, s: false, d: false, space: false },
+      keys: { w: false, a: false, s: false, d: false, space: false, shift: false },
       worldPos: { x: startPos.x, z: startPos.z },
       velocity: { x: 0, z: 0 },
       dashCooldown: 0,
       isDashing: false,
       dashActiveTimer: 0,
+      blastCooldown: 0,
     };
     this.sessions.set(playerId, session);
 
@@ -206,11 +213,14 @@ export class GameLobby {
 
     // Reset player positions and state
     const startPositions = [
-      { x: 1, z: 1 }, { x: 8, z: 8 }, { x: 1, z: 8 }, { x: 8, z: 1 }
+      { x: 1, z: 1 }, { x: 14, z: 1 }, { x: 14, z: 14 }, { x: 1, z: 14 },
+      { x: 7, z: 1 }, { x: 14, z: 7 }, { x: 7, z: 14 }, { x: 1, z: 7 },
     ];
     this.lobbyState.players.forEach((p, i) => {
       p.isAlive = true;
       p.position = startPositions[i];
+      p.blastCooldown = 0;
+      p.blastActive = false;
       const session = this.sessions.get(p.id);
       if (session) {
         session.worldPos = { x: startPositions[i].x, z: startPositions[i].z };
@@ -218,8 +228,15 @@ export class GameLobby {
         session.dashCooldown = 0;
         session.isDashing = false;
         session.dashActiveTimer = 0;
+        session.blastCooldown = 0;
       }
     });
+
+    // Initialise gravity wells at fixed positions (left-centre and right-centre of 16×16 arena)
+    this.lobbyState.gravityWells = [
+      { id: 'well-0', position: { x: 4.0, z: 8.0 }, velocity: { x: 0, z: 0 }, radius: 0.6 },
+      { id: 'well-1', position: { x: 12.0, z: 8.0 }, velocity: { x: 0, z: 0 }, radius: 0.6 },
+    ];
 
     // Countdown: 3 -> 2 -> 1 -> GO
     for (const t of this.countdownTimeouts) clearTimeout(t);
@@ -356,17 +373,21 @@ export class GameLobby {
     this.lobbyState.winner = null;
     this.lobbyState.nextTileFallIn = 7000;
     this.lobbyState.countdown = undefined;
+    this.lobbyState.gravityWells = [];
     this.lobbyState.currentRound = 0;
     this.lobbyState.roundScores = {};
     this.lobbyState.roundWinnerId = null;
     this.fallCount = 0;
 
     const startPositions = [
-      { x: 1, z: 1 }, { x: 8, z: 8 }, { x: 1, z: 8 }, { x: 8, z: 1 }
+      { x: 1, z: 1 }, { x: 14, z: 1 }, { x: 14, z: 14 }, { x: 1, z: 14 },
+      { x: 7, z: 1 }, { x: 14, z: 7 }, { x: 7, z: 14 }, { x: 1, z: 7 },
     ];
     this.lobbyState.players.forEach((p, i) => {
       p.isAlive = true;
       p.score = 0;
+      p.blastCooldown = 0;
+      p.blastActive = false;
       p.position = startPositions[i];
       const session = this.sessions.get(p.id);
       if (session) {
@@ -375,6 +396,7 @@ export class GameLobby {
         session.dashCooldown = 0;
         session.isDashing = false;
         session.dashActiveTimer = 0;
+        session.blastCooldown = 0;
       }
     });
 
@@ -384,6 +406,11 @@ export class GameLobby {
   private processMovement(dt: number): void {
     const speed = PLAYER_SPEED * (dt / TICK_RATE);
     const DASH_ACTIVE_WINDOW = 350; // ms that a dash counts as "active" for boosted collisions
+
+    // Reset per-tick flags
+    for (const player of this.lobbyState.players) {
+      player.blastActive = false;
+    }
 
     for (const [playerId, session] of this.sessions) {
       const player = this.lobbyState.players.find(p => p.id === playerId);
@@ -396,6 +423,11 @@ export class GameLobby {
       if (session.dashActiveTimer > 0) {
         session.dashActiveTimer -= dt;
         if (session.dashActiveTimer <= 0) session.isDashing = false;
+      }
+
+      // Update blast cooldown
+      if (session.blastCooldown > 0) {
+        session.blastCooldown -= dt;
       }
 
       // Apply input to velocity
@@ -421,6 +453,42 @@ export class GameLobby {
         session.dashActiveTimer = DASH_ACTIVE_WINDOW;
       }
 
+      // Blast (Shift): omnidirectional shockwave pushing nearby players and gravity wells
+      if (session.keys.shift && session.blastCooldown <= 0) {
+        session.blastCooldown = BLAST_COOLDOWN_MS;
+        player.blastActive = true;
+
+        // Push nearby players
+        for (const [otherId, otherSession] of this.sessions) {
+          if (otherId === playerId) continue;
+          const otherPlayer = this.lobbyState.players.find(p => p.id === otherId);
+          if (!otherPlayer || !otherPlayer.isAlive) continue;
+
+          const dx = otherSession.worldPos.x - session.worldPos.x;
+          const dz = otherSession.worldPos.z - session.worldPos.z;
+          const dist = Math.sqrt(dx * dx + dz * dz);
+
+          if (dist < BLAST_RADIUS && dist > 0.01) {
+            const force = BLAST_FORCE * (1 - dist / BLAST_RADIUS);
+            otherSession.velocity.x += (dx / dist) * force;
+            otherSession.velocity.z += (dz / dist) * force;
+          }
+        }
+
+        // Push nearby gravity wells
+        for (const well of this.lobbyState.gravityWells) {
+          const dx = well.position.x - session.worldPos.x;
+          const dz = well.position.z - session.worldPos.z;
+          const dist = Math.sqrt(dx * dx + dz * dz);
+
+          if (dist < BLAST_RADIUS && dist > 0.01) {
+            const force = 1.8 * (1 - dist / BLAST_RADIUS);
+            well.velocity.x += (dx / dist) * force;
+            well.velocity.z += (dz / dist) * force;
+          }
+        }
+      }
+
       // Add movement to velocity
       session.velocity.x += inputX * speed;
       session.velocity.z += inputZ * speed;
@@ -442,6 +510,24 @@ export class GameLobby {
       session.worldPos.x = Math.max(-0.5, Math.min(ARENA_SIZE - 0.5, session.worldPos.x));
       session.worldPos.z = Math.max(-0.5, Math.min(ARENA_SIZE - 0.5, session.worldPos.z));
 
+      // Wall collision (AABB: wall half = 0.5, player radius = 0.42)
+      const WALL_COMBINED = 0.5 + 0.42; // wall half-width + player collision radius
+      for (const wall of WALL_CELLS) {
+        const wdx = session.worldPos.x - wall.x;
+        const wdz = session.worldPos.z - wall.z;
+        const ovX = WALL_COMBINED - Math.abs(wdx);
+        const ovZ = WALL_COMBINED - Math.abs(wdz);
+        if (ovX > 0 && ovZ > 0) {
+          if (ovX <= ovZ) {
+            session.worldPos.x += wdx >= 0 ? ovX : -ovX;
+            session.velocity.x = 0;
+          } else {
+            session.worldPos.z += wdz >= 0 ? ovZ : -ovZ;
+            session.velocity.z = 0;
+          }
+        }
+      }
+
       // Update grid position
       player.position.x = Math.round(session.worldPos.x);
       player.position.z = Math.round(session.worldPos.z);
@@ -450,8 +536,9 @@ export class GameLobby {
       player.position.x = Math.max(0, Math.min(ARENA_SIZE - 1, player.position.x));
       player.position.z = Math.max(0, Math.min(ARENA_SIZE - 1, player.position.z));
 
-      // Expose dash cooldown to player
+      // Expose cooldowns to player
       player.dashCooldown = Math.max(0, session.dashCooldown);
+      player.blastCooldown = Math.max(0, session.blastCooldown);
 
       // Check collision with other players
       for (const [otherId, otherSession] of this.sessions) {
@@ -488,13 +575,85 @@ export class GameLobby {
         }
       }
     }
+
+    // Process gravity wells: pull players, handle player collisions, move wells
+    const WELL_BOUND_MIN = 0.8;
+    const WELL_BOUND_MAX = ARENA_SIZE - 0.8;
+    for (const well of this.lobbyState.gravityWells) {
+      // Apply gravity pull to each alive player
+      for (const [playerId, session] of this.sessions) {
+        const player = this.lobbyState.players.find(p => p.id === playerId);
+        if (!player || !player.isAlive) continue;
+
+        const dx = well.position.x - session.worldPos.x;
+        const dz = well.position.z - session.worldPos.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+
+        if (dist < GRAVITY_WELL_INFLUENCE_RADIUS && dist > 0.8) {
+          const pullFactor = GRAVITY_WELL_PULL * (1 - dist / GRAVITY_WELL_INFLUENCE_RADIUS);
+          session.velocity.x += (dx / dist) * pullFactor;
+          session.velocity.z += (dz / dist) * pullFactor;
+        }
+
+        // Player dashes into well — push well away
+        if (dist < 0.9 && dist > 0.001 && session.isDashing) {
+          const nx = dx / dist;
+          const nz = dz / dist;
+          well.velocity.x -= nx * 0.5;
+          well.velocity.z -= nz * 0.5;
+          // Small bounce-back on the player
+          session.velocity.x += nx * 0.2;
+          session.velocity.z += nz * 0.2;
+        }
+      }
+
+      // Move the well
+      well.position.x += well.velocity.x;
+      well.position.z += well.velocity.z;
+      well.velocity.x *= 0.93;
+      well.velocity.z *= 0.93;
+
+      // Bounce off arena boundaries
+      if (well.position.x < WELL_BOUND_MIN) {
+        well.position.x = WELL_BOUND_MIN;
+        well.velocity.x = Math.abs(well.velocity.x) * 0.7;
+      } else if (well.position.x > WELL_BOUND_MAX) {
+        well.position.x = WELL_BOUND_MAX;
+        well.velocity.x = -Math.abs(well.velocity.x) * 0.7;
+      }
+      if (well.position.z < WELL_BOUND_MIN) {
+        well.position.z = WELL_BOUND_MIN;
+        well.velocity.z = Math.abs(well.velocity.z) * 0.7;
+      } else if (well.position.z > WELL_BOUND_MAX) {
+        well.position.z = WELL_BOUND_MAX;
+        well.velocity.z = -Math.abs(well.velocity.z) * 0.7;
+      }
+
+      // Bounce gravity wells off wall cells (wall half = 0.5, well collision radius = 0.7)
+      const WELL_WALL_COMBINED = 0.5 + 0.7; // wall half-width + well radius
+      for (const wall of WALL_CELLS) {
+        const wdx = well.position.x - wall.x;
+        const wdz = well.position.z - wall.z;
+        const ovX = WELL_WALL_COMBINED - Math.abs(wdx);
+        const ovZ = WELL_WALL_COMBINED - Math.abs(wdz);
+        if (ovX > 0 && ovZ > 0) {
+          if (ovX <= ovZ) {
+            well.position.x += wdx >= 0 ? ovX : -ovX;
+            well.velocity.x *= -0.7;
+          } else {
+            well.position.z += wdz >= 0 ? ovZ : -ovZ;
+            well.velocity.z *= -0.7;
+          }
+        }
+      }
+    }
   }
 
   private dropRandomTiles(): void {
     const solidTiles: Array<{ x: number; z: number }> = [];
     for (let x = 0; x < ARENA_SIZE; x++) {
       for (let z = 0; z < ARENA_SIZE; z++) {
-        if (this.lobbyState.tiles[x][z].state === 'solid') {
+        if (this.lobbyState.tiles[x][z].state === 'solid' && !this.wallSet.has(`${x},${z}`)) {
           solidTiles.push({ x, z });
         }
       }
@@ -555,7 +714,7 @@ export class GameLobby {
 
   private handleInput(
     playerId: string,
-    keys: { w: boolean; a: boolean; s: boolean; d: boolean; space: boolean }
+    keys: { w: boolean; a: boolean; s: boolean; d: boolean; space: boolean; shift: boolean }
   ): void {
     const session = this.sessions.get(playerId);
     if (session) {

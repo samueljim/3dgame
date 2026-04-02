@@ -81,10 +81,11 @@ export default function LobbyPage({
   const isHost = myPlayer?.isHost ?? false;
   const canStart = isHost && (lobbyState?.players.length ?? 0) >= 1;
 
-  const playerSlots = Array.from({ length: 4 }, (_, i) => lobbyState?.players[i] ?? null);
+  const playerSlots = Array.from({ length: 8 }, (_, i) => lobbyState?.players[i] ?? null);
 
   const colorMap: Record<string, string> = {
-    red: '#ff4444', green: '#44ff44', yellow: '#ffff44', purple: '#aa44ff'
+    red: '#ff4444', green: '#44ff44', yellow: '#ffff44', purple: '#aa44ff',
+    blue: '#4477ff', cyan: '#44ffee', orange: '#ff9944', pink: '#ff44bb',
   };
 
   return (
@@ -118,7 +119,7 @@ export default function LobbyPage({
             </div>
 
             <div className="players-section">
-              <div className="section-title">Players ({lobbyState?.players.length ?? 0}/4)</div>
+              <div className="section-title">Players ({lobbyState?.players.length ?? 0}/8)</div>
               <div className="players-grid">
                 {playerSlots.map((player, i) => (
                   <div key={i} className={`player-slot ${!player ? 'empty' : ''}`}>

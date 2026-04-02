@@ -4,6 +4,8 @@ export class SoundManager {
   isMuted: boolean = false;
   private ambientOscillators: OscillatorNode[] = [];
   private ambientRunning = false;
+  private musicElement: HTMLAudioElement | null = null;
+  private readonly MUSIC_VOLUME = 0.1;
 
   init(): void {
     if (this.ctx) return;
@@ -27,6 +29,9 @@ export class SoundManager {
     this.isMuted = !this.isMuted;
     if (this.masterGain) {
       this.masterGain.gain.value = this.isMuted ? 0 : 0.6;
+    }
+    if (this.musicElement) {
+      this.musicElement.volume = this.isMuted ? 0 : this.MUSIC_VOLUME;
     }
   }
 
@@ -245,5 +250,23 @@ export class SoundManager {
     gain.connect(this.mg);
     osc.start(now);
     osc.stop(now + 0.15);
+  }
+
+  startMusic(url: string): void {
+    if (this.musicElement) return;
+    const audio = new Audio(url);
+    audio.loop = true;
+    audio.volume = this.isMuted ? 0 : this.MUSIC_VOLUME;
+    this.musicElement = audio;
+    audio.play().catch((err) => {
+      // Autoplay blocked; music will stay silent until user interaction unlocks audio
+      console.warn('Music autoplay blocked:', err);
+    });
+  }
+
+  stopMusic(): void {
+    if (!this.musicElement) return;
+    this.musicElement.pause();
+    this.musicElement = null;
   }
 }

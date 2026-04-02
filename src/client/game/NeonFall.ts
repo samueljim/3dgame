@@ -390,7 +390,7 @@ export class NeonFallGame {
             const mesh = this.tileMeshes[x]?.[z];
             if (mesh) {
               this.spawnTileDebris(x * TILE_SIZE, z * TILE_SIZE);
-              this.animateTileFall(mesh, x, z);
+              this.animateTileFall(mesh);
               this.tileMeshes[x][z] = null;
             }
             this.soundManager.playTileFall();
@@ -488,7 +488,7 @@ export class NeonFallGame {
     });
   }
 
-  private animateTileFall(mesh: THREE.Mesh, _x: number, _z: number): void {
+  private animateTileFall(mesh: THREE.Mesh): void {
     const startY = mesh.position.y;
     const startTime = performance.now();
     const duration = 800;

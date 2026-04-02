@@ -19,7 +19,6 @@ export interface TileState {
   z: number;
   state: 'solid' | 'crumbling' | 'fallen';
   fallTimer?: number; // ms until fall
-  crumbling?: boolean;
 }
 
 export type LobbyStatus = 'waiting' | 'playing' | 'finished';

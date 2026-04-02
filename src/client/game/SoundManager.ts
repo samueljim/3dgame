@@ -223,7 +223,10 @@ export class SoundManager {
   stopAmbient(): void {
     this.ambientRunning = false;
     for (const osc of this.ambientOscillators) {
-      try { osc.stop(); } catch (_) { /* already stopped */ }
+      try { osc.stop(); } catch (e) {
+        // OscillatorNode.stop() throws if the node was never started or already stopped
+        if (!(e instanceof DOMException)) console.warn('Unexpected error stopping oscillator', e);
+      }
     }
     this.ambientOscillators = [];
   }

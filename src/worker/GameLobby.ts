@@ -337,7 +337,7 @@ export class GameLobby {
       if (session.keys.space && session.dashCooldown <= 0 && (inputX !== 0 || inputZ !== 0)) {
         session.velocity.x += inputX * DASH_FORCE;
         session.velocity.z += inputZ * DASH_FORCE;
-        session.dashCooldown = DASH_COOLDOWN_MS; // 1.2 second cooldown
+        session.dashCooldown = DASH_COOLDOWN_MS;
       }
 
       // Add movement to velocity
@@ -429,7 +429,7 @@ export class GameLobby {
     for (let i = 0; i < tilesToFall; i++) {
       const tile = solidTiles[i];
       // Mark as crumbling first
-      this.lobbyState.tiles[tile.x][tile.z] = { x: tile.x, z: tile.z, state: 'crumbling', crumbling: true };
+      this.lobbyState.tiles[tile.x][tile.z] = { x: tile.x, z: tile.z, state: 'crumbling' };
       // Schedule transition to fallen after TILE_CRUMBLE_WARNING ms
       const tx = tile.x;
       const tz = tile.z;

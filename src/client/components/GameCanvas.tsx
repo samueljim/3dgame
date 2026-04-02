@@ -4,6 +4,7 @@ import { NeonFallGame } from '../game/NeonFall';
 import { SoundManager } from '../game/SoundManager';
 import type { LobbyState, ServerMessage } from '@shared/types';
 import { DASH_COOLDOWN_MS, MAX_ROUNDS, BLAST_COOLDOWN_MS } from '@shared/types';
+import musicUrl from './music.mp3';
 
 interface GameCanvasProps {
   lobbyState: LobbyState;
@@ -79,6 +80,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     const game = new NeonFallGame(canvasRef.current, ws, playerId, initialState, sound);
     gameRef.current = game;
     sound.startAmbient();
+    sound.startMusic(musicUrl);
 
     const handleMessage = (event: MessageEvent) => {
       const msg: ServerMessage = JSON.parse(event.data);
@@ -107,6 +109,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
       ws.removeEventListener('message', handleMessage);
       game.destroy();
       sound.stopAmbient();
+      sound.stopMusic();
     };
   }, []);
 

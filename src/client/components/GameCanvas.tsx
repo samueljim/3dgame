@@ -221,7 +221,9 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     : null;
 
   const isRoundOver = currentState.status === 'round_over';
-  const maxWins = Math.ceil((currentState.maxRounds ?? MAX_ROUNDS) / 2);
+  // Use client-side MAX_ROUNDS as the hard cap for star display to avoid repeat() with server-provided lengths
+  const STAR_COUNT = Math.ceil(MAX_ROUNDS / 2); // always ≤ 3 based on the constant
+  const maxWins = STAR_COUNT;
 
   return (
     <div className="game-wrapper">
@@ -257,7 +259,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
                     {player.id === playerId && <span style={{ color: 'rgba(200,200,255,0.5)', fontSize: '0.7rem' }}>(you)</span>}
                     {currentState.currentRound > 0 && (
                       <span className="hud-wins" title="Round wins">
-                        {'★'.repeat(playerWins)}{'☆'.repeat(Math.max(0, maxWins - playerWins))}
+                        {Array.from({ length: STAR_COUNT }, (_, i) => i < playerWins ? '★' : '☆').join('')}
                       </span>
                     )}
                   </div>
@@ -351,7 +353,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
                 <div key={p.id} className="round-score-row" style={{ color: colorTextStyle[p.color] }}>
                   <span className="round-score-name">{p.name}</span>
                   <span className="round-score-stars">
-                    {'★'.repeat(wins)}{'☆'.repeat(Math.max(0, maxWins - wins))}
+                    {Array.from({ length: STAR_COUNT }, (_, i) => i < wins ? '★' : '☆').join('')}
                   </span>
                   <span className="round-score-count">{wins} win{wins !== 1 ? 's' : ''}</span>
                 </div>
@@ -386,7 +388,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
                   <div key={p.id} className="round-score-row" style={{ color: colorTextStyle[p.color] }}>
                     <span className="round-score-name">{p.name}</span>
                     <span className="round-score-stars">
-                      {'★'.repeat(wins)}{'☆'.repeat(Math.max(0, maxWins - wins))}
+                      {Array.from({ length: STAR_COUNT }, (_, i) => i < wins ? '★' : '☆').join('')}
                     </span>
                     <span className="round-score-count">{wins} win{wins !== 1 ? 's' : ''}</span>
                   </div>

@@ -3,8 +3,11 @@ import { EffectComposer, RenderPass, EffectPass, BloomEffect, VignetteEffect } f
 import { gsap } from 'gsap';
 import * as CANNON from 'cannon-es';
 import type { LobbyState, Player, ClientMessage } from '@shared/types';
-import { ARENA_SIZE, TILE_SIZE } from '@shared/types';
+import { ARENA_SIZE, TILE_SIZE, WALL_CELLS } from '@shared/types';
 import type { SoundManager } from './SoundManager';
+
+// Height of impassable wall blocks (world units)
+const WALL_HEIGHT = 2.6;
 
 const PLAYER_COLORS_HEX: Record<string, number> = {
   red: 0xff3333,
@@ -77,6 +80,15 @@ export class NeonFallGame {
   // Gravity well meshes
   private gravityWellMeshes: Map<string, GravityWellMesh> = new Map();
 
+  // Per-tile void/pit glow meshes (shown when tile has fallen)
+  private voidMeshes: Map<string, THREE.Mesh> = new Map();
+
+  // Pulsing hot base floor mesh (visible through fallen gaps)
+  private baseMesh!: THREE.Mesh;
+
+  // Fast lookup for wall cells
+  private readonly wallSet: Set<string> = new Set(WALL_CELLS.map(w => `${w.x},${w.z}`));
+
   constructor(
     canvas: HTMLCanvasElement,
     ws: WebSocket,
@@ -107,8 +119,8 @@ export class NeonFallGame {
     this.scene.background = new THREE.Color(0x020208);
     this.scene.fog = new THREE.FogExp2(0x020208, 0.015);
 
-    this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);
-    this.camera.position.set(ARENA_SIZE * TILE_SIZE * 0.5, 18, ARENA_SIZE * TILE_SIZE * 0.5 + 15);
+    this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 300);
+    this.camera.position.set(ARENA_SIZE * TILE_SIZE * 0.5, 32, ARENA_SIZE * TILE_SIZE * 0.5 + 26);
     this.camera.lookAt(ARENA_SIZE * TILE_SIZE * 0.5, 0, ARENA_SIZE * TILE_SIZE * 0.5);
     this.cameraBasePos.copy(this.camera.position);
 
@@ -154,17 +166,17 @@ export class NeonFallGame {
     dirLight.shadow.mapSize.width = 2048;
     dirLight.shadow.mapSize.height = 2048;
     dirLight.shadow.camera.near = 0.5;
-    dirLight.shadow.camera.far = 80;
-    dirLight.shadow.camera.left = -25;
-    dirLight.shadow.camera.right = 25;
-    dirLight.shadow.camera.top = 25;
-    dirLight.shadow.camera.bottom = -25;
+    dirLight.shadow.camera.far = 120;
+    dirLight.shadow.camera.left = -50;
+    dirLight.shadow.camera.right = 50;
+    dirLight.shadow.camera.top = 50;
+    dirLight.shadow.camera.bottom = -50;
     this.scene.add(dirLight);
 
     const hemi = new THREE.HemisphereLight(0x0022aa, 0x001100, 0.3);
     this.scene.add(hemi);
 
-    const arenaLight = new THREE.PointLight(0x004488, 2.0, 30);
+    const arenaLight = new THREE.PointLight(0x004488, 2.0, 60);
     arenaLight.position.set(ARENA_SIZE * TILE_SIZE * 0.5, 5, ARENA_SIZE * TILE_SIZE * 0.5);
     this.scene.add(arenaLight);
 
@@ -205,6 +217,12 @@ export class NeonFallGame {
     for (let x = 0; x < ARENA_SIZE; x++) {
       this.tileMeshes[x] = [];
       for (let z = 0; z < ARENA_SIZE; z++) {
+        // Wall cells are rendered as tall obstacles, not floor tiles
+        if (this.wallSet.has(`${x},${z}`)) {
+          this.tileMeshes[x][z] = null;
+          this.buildWallCell(x, z);
+          continue;
+        }
         const tileState = this.lobbyState.tiles[x]?.[z];
         if (!tileState || tileState.state === 'fallen') {
           this.tileMeshes[x][z] = null;
@@ -216,25 +234,42 @@ export class NeonFallGame {
       }
     }
 
+    // Hot-glow void floor — clearly visible through fallen-tile gaps
     const baseGeo = new THREE.BoxGeometry(
       ARENA_SIZE * TILE_SIZE + 1,
       0.1,
       ARENA_SIZE * TILE_SIZE + 1
     );
     const baseMat = new THREE.MeshStandardMaterial({
-      color: 0x000820,
-      transparent: true,
-      opacity: 0.5,
+      color: 0x1a0000,
+      emissive: 0xff3300,
+      emissiveIntensity: 1.5,
     });
-    const base = new THREE.Mesh(baseGeo, baseMat);
-    base.position.set(
+    this.baseMesh = new THREE.Mesh(baseGeo, baseMat);
+    this.baseMesh.position.set(
       (ARENA_SIZE * TILE_SIZE) / 2 - TILE_SIZE / 2,
       -0.2,
       (ARENA_SIZE * TILE_SIZE) / 2 - TILE_SIZE / 2
     );
-    this.scene.add(base);
+    this.scene.add(this.baseMesh);
 
     this.addArenaEdges();
+  }
+
+  private buildWallCell(x: number, z: number): void {
+    const geo = new THREE.BoxGeometry(TILE_SIZE * 0.88, WALL_HEIGHT, TILE_SIZE * 0.88);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x003355,
+      emissive: 0x0077cc,
+      emissiveIntensity: 0.9,
+      roughness: 0.2,
+      metalness: 0.9,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    // Base of wall sits at tile top face (y = 0.15); wall centre is half-height above that
+    mesh.position.set(x * TILE_SIZE, 0.15 + WALL_HEIGHT / 2, z * TILE_SIZE);
+    mesh.castShadow = true;
+    this.scene.add(mesh);
   }
 
   private createTileMesh(geo: THREE.BoxGeometry, x: number, z: number): THREE.Mesh {
@@ -396,14 +431,17 @@ export class NeonFallGame {
 
         if (curr !== prev) {
           if (curr === 'solid' && prev !== 'solid') {
+            this.removeVoidMesh(x, z);
             // Tile was reset (new round start)
             const existingMesh = this.tileMeshes[x]?.[z];
             if (!existingMesh) {
-              // Was fallen — create a fresh mesh
-              const tileGeo = new THREE.BoxGeometry(TILE_SIZE - 0.1, 0.3, TILE_SIZE - 0.1);
-              const mesh = this.createTileMesh(tileGeo, x, z);
-              this.scene.add(mesh);
-              this.tileMeshes[x][z] = mesh;
+              // Was fallen — create a fresh mesh (skip wall cells)
+              if (!this.wallSet.has(`${x},${z}`)) {
+                const tileGeo = new THREE.BoxGeometry(TILE_SIZE - 0.1, 0.3, TILE_SIZE - 0.1);
+                const mesh = this.createTileMesh(tileGeo, x, z);
+                this.scene.add(mesh);
+                this.tileMeshes[x][z] = mesh;
+              }
             } else {
               // Was crumbling — reset the material and transform back to normal
               const isEven = (x + z) % 2 === 0;
@@ -419,20 +457,25 @@ export class NeonFallGame {
               existingMesh.rotation.set(0, 0, 0);
             }
           } else if (curr === 'crumbling' && prev === 'solid') {
-            const mesh = this.tileMeshes[x]?.[z];
-            if (mesh) {
-              this.animateCrumblingTile(mesh);
-              this.soundManager.playTileCrumble();
+            if (!this.wallSet.has(`${x},${z}`)) {
+              const mesh = this.tileMeshes[x]?.[z];
+              if (mesh) {
+                this.animateCrumblingTile(mesh);
+                this.soundManager.playTileCrumble();
+              }
             }
           } else if (curr === 'fallen') {
-            const mesh = this.tileMeshes[x]?.[z];
-            if (mesh) {
-              this.spawnTileDebris(x * TILE_SIZE, z * TILE_SIZE);
-              this.animateTileFall(mesh);
-              this.tileMeshes[x][z] = null;
+            if (!this.wallSet.has(`${x},${z}`)) {
+              const mesh = this.tileMeshes[x]?.[z];
+              if (mesh) {
+                this.spawnTileDebris(x * TILE_SIZE, z * TILE_SIZE);
+                this.animateTileFall(mesh);
+                this.tileMeshes[x][z] = null;
+              }
+              this.spawnVoidMesh(x, z);
+              this.soundManager.playTileFall();
+              this.shakeCamera(0.5);
             }
-            this.soundManager.playTileFall();
-            this.shakeCamera(0.5);
           }
           this.prevTileStates.set(key, curr);
         }
@@ -527,8 +570,34 @@ export class NeonFallGame {
       const targetX = myPlayer.position.x * TILE_SIZE;
       const targetZ = myPlayer.position.z * TILE_SIZE;
       this.cameraBasePos.x += (targetX - this.cameraBasePos.x) * 0.05;
-      this.cameraBasePos.z += (targetZ + 12 - this.cameraBasePos.z) * 0.05;
-      this.cameraBasePos.y = 18;
+      this.cameraBasePos.z += (targetZ + 26 - this.cameraBasePos.z) * 0.05;
+      this.cameraBasePos.y = 32;
+    }
+  }
+
+  private spawnVoidMesh(x: number, z: number): void {
+    const key = `${x},${z}`;
+    if (this.voidMeshes.has(key)) return;
+    const geo = new THREE.BoxGeometry(TILE_SIZE - 0.05, 0.1, TILE_SIZE - 0.05);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x200000,
+      emissive: 0xff2200,
+      emissiveIntensity: 2.0,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(x * TILE_SIZE, -0.16, z * TILE_SIZE);
+    this.scene.add(mesh);
+    this.voidMeshes.set(key, mesh);
+  }
+
+  private removeVoidMesh(x: number, z: number): void {
+    const key = `${x},${z}`;
+    const mesh = this.voidMeshes.get(key);
+    if (mesh) {
+      this.scene.remove(mesh);
+      (mesh.geometry as THREE.BufferGeometry).dispose();
+      (mesh.material as THREE.Material).dispose();
+      this.voidMeshes.delete(key);
     }
   }
 
@@ -914,6 +983,18 @@ export class NeonFallGame {
       wellMesh.ring2.rotation.y += delta * 0.7;
       // Pulse the light
       wellMesh.light.intensity = 1.8 + Math.sin(time * 3.0) * 0.5;
+    }
+
+    // Pulse void pit meshes (fallen tile gaps)
+    for (const [, vm] of this.voidMeshes) {
+      const mat = vm.material as THREE.MeshStandardMaterial;
+      mat.emissiveIntensity = 1.8 + Math.sin(time * 3.5 + vm.position.x * 0.7) * 0.6;
+    }
+
+    // Pulse hot base floor
+    if (this.baseMesh) {
+      const mat = this.baseMesh.material as THREE.MeshStandardMaterial;
+      mat.emissiveIntensity = 1.2 + Math.sin(time * 1.5) * 0.3;
     }
 
     this.composer.render(delta);

@@ -6,7 +6,7 @@ import {
   PLAYER_COLORS, ARENA_SIZE, PLAYER_SPEED, DASH_FORCE,
   TICK_RATE, TILES_PER_FALL, TILE_CRUMBLE_WARNING, DASH_COOLDOWN_MS,
   MAX_ROUNDS, MAX_PLAYERS, BLAST_COOLDOWN_MS, BLAST_FORCE, BLAST_RADIUS,
-  GRAVITY_WELL_PULL, GRAVITY_WELL_INFLUENCE_RADIUS
+  GRAVITY_WELL_PULL, GRAVITY_WELL_INFLUENCE_RADIUS, WALL_CELLS
 } from '../shared/types';
 
 interface PlayerSession {
@@ -29,6 +29,8 @@ export class GameLobby {
   private lobbyId: string = '';
   private fallCount: number = 0;
   private countdownTimeouts: ReturnType<typeof setTimeout>[] = [];
+  // Fast lookup: "x,z" → true for every impassable wall cell
+  private readonly wallSet: Set<string> = new Set(WALL_CELLS.map(w => `${w.x},${w.z}`));
 
   constructor(state: DurableObjectState) {
     this.state = state;
@@ -141,8 +143,8 @@ export class GameLobby {
     const color: PlayerColor = PLAYER_COLORS[colorIndex];
 
     const startPositions = [
-      { x: 1, z: 1 }, { x: 8, z: 1 }, { x: 8, z: 8 }, { x: 1, z: 8 },
-      { x: 4, z: 1 }, { x: 8, z: 4 }, { x: 4, z: 8 }, { x: 1, z: 4 },
+      { x: 1, z: 1 }, { x: 14, z: 1 }, { x: 14, z: 14 }, { x: 1, z: 14 },
+      { x: 7, z: 1 }, { x: 14, z: 7 }, { x: 7, z: 14 }, { x: 1, z: 7 },
     ];
     const startPos = startPositions[colorIndex];
 
@@ -211,8 +213,8 @@ export class GameLobby {
 
     // Reset player positions and state
     const startPositions = [
-      { x: 1, z: 1 }, { x: 8, z: 1 }, { x: 8, z: 8 }, { x: 1, z: 8 },
-      { x: 4, z: 1 }, { x: 8, z: 4 }, { x: 4, z: 8 }, { x: 1, z: 4 },
+      { x: 1, z: 1 }, { x: 14, z: 1 }, { x: 14, z: 14 }, { x: 1, z: 14 },
+      { x: 7, z: 1 }, { x: 14, z: 7 }, { x: 7, z: 14 }, { x: 1, z: 7 },
     ];
     this.lobbyState.players.forEach((p, i) => {
       p.isAlive = true;
@@ -230,10 +232,10 @@ export class GameLobby {
       }
     });
 
-    // Initialise gravity wells at fixed positions
+    // Initialise gravity wells at fixed positions (left-centre and right-centre of 16×16 arena)
     this.lobbyState.gravityWells = [
-      { id: 'well-0', position: { x: 2.5, z: 5.0 }, velocity: { x: 0, z: 0 }, radius: 0.6 },
-      { id: 'well-1', position: { x: 7.5, z: 5.0 }, velocity: { x: 0, z: 0 }, radius: 0.6 },
+      { id: 'well-0', position: { x: 4.0, z: 8.0 }, velocity: { x: 0, z: 0 }, radius: 0.6 },
+      { id: 'well-1', position: { x: 12.0, z: 8.0 }, velocity: { x: 0, z: 0 }, radius: 0.6 },
     ];
 
     // Countdown: 3 -> 2 -> 1 -> GO
@@ -378,8 +380,8 @@ export class GameLobby {
     this.fallCount = 0;
 
     const startPositions = [
-      { x: 1, z: 1 }, { x: 8, z: 1 }, { x: 8, z: 8 }, { x: 1, z: 8 },
-      { x: 4, z: 1 }, { x: 8, z: 4 }, { x: 4, z: 8 }, { x: 1, z: 4 },
+      { x: 1, z: 1 }, { x: 14, z: 1 }, { x: 14, z: 14 }, { x: 1, z: 14 },
+      { x: 7, z: 1 }, { x: 14, z: 7 }, { x: 7, z: 14 }, { x: 1, z: 7 },
     ];
     this.lobbyState.players.forEach((p, i) => {
       p.isAlive = true;
@@ -508,6 +510,24 @@ export class GameLobby {
       session.worldPos.x = Math.max(-0.5, Math.min(ARENA_SIZE - 0.5, session.worldPos.x));
       session.worldPos.z = Math.max(-0.5, Math.min(ARENA_SIZE - 0.5, session.worldPos.z));
 
+      // Wall collision (AABB: wall half = 0.5, player radius = 0.42)
+      const WALL_COMBINED = 0.5 + 0.42; // wall half-width + player collision radius
+      for (const wall of WALL_CELLS) {
+        const wdx = session.worldPos.x - wall.x;
+        const wdz = session.worldPos.z - wall.z;
+        const ovX = WALL_COMBINED - Math.abs(wdx);
+        const ovZ = WALL_COMBINED - Math.abs(wdz);
+        if (ovX > 0 && ovZ > 0) {
+          if (ovX <= ovZ) {
+            session.worldPos.x += wdx >= 0 ? ovX : -ovX;
+            session.velocity.x = 0;
+          } else {
+            session.worldPos.z += wdz >= 0 ? ovZ : -ovZ;
+            session.velocity.z = 0;
+          }
+        }
+      }
+
       // Update grid position
       player.position.x = Math.round(session.worldPos.x);
       player.position.z = Math.round(session.worldPos.z);
@@ -608,6 +628,24 @@ export class GameLobby {
         well.position.z = WELL_BOUND_MAX;
         well.velocity.z = -Math.abs(well.velocity.z) * 0.7;
       }
+
+      // Bounce gravity wells off wall cells (wall half = 0.5, well collision radius = 0.7)
+      const WELL_WALL_COMBINED = 0.5 + 0.7; // wall half-width + well radius
+      for (const wall of WALL_CELLS) {
+        const wdx = well.position.x - wall.x;
+        const wdz = well.position.z - wall.z;
+        const ovX = WELL_WALL_COMBINED - Math.abs(wdx);
+        const ovZ = WELL_WALL_COMBINED - Math.abs(wdz);
+        if (ovX > 0 && ovZ > 0) {
+          if (ovX <= ovZ) {
+            well.position.x += wdx >= 0 ? ovX : -ovX;
+            well.velocity.x *= -0.7;
+          } else {
+            well.position.z += wdz >= 0 ? ovZ : -ovZ;
+            well.velocity.z *= -0.7;
+          }
+        }
+      }
     }
   }
 
@@ -615,7 +653,7 @@ export class GameLobby {
     const solidTiles: Array<{ x: number; z: number }> = [];
     for (let x = 0; x < ARENA_SIZE; x++) {
       for (let z = 0; z < ARENA_SIZE; z++) {
-        if (this.lobbyState.tiles[x][z].state === 'solid') {
+        if (this.lobbyState.tiles[x][z].state === 'solid' && !this.wallSet.has(`${x},${z}`)) {
           solidTiles.push({ x, z });
         }
       }

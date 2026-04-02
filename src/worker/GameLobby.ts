@@ -4,7 +4,8 @@ import type {
 } from '../shared/types';
 import {
   PLAYER_COLORS, ARENA_SIZE, PLAYER_SPEED, DASH_FORCE,
-  TICK_RATE, TILES_PER_FALL, TILE_CRUMBLE_WARNING, DASH_COOLDOWN_MS
+  TICK_RATE, TILES_PER_FALL, TILE_CRUMBLE_WARNING, DASH_COOLDOWN_MS,
+  MAX_ROUNDS
 } from '../shared/types';
 
 interface PlayerSession {
@@ -14,6 +15,8 @@ interface PlayerSession {
   worldPos: { x: number; z: number }; // float world position
   velocity: { x: number; z: number };
   dashCooldown: number; // ms
+  isDashing: boolean;   // true during active dash (for collision boost)
+  dashActiveTimer: number; // ms remaining of dash-boost window
 }
 
 export class GameLobby {
@@ -38,7 +41,11 @@ export class GameLobby {
       tiles: this.initTiles(),
       gameTime: 0,
       winner: null,
-      nextTileFallIn: 5000,
+      nextTileFallIn: 7000,
+      currentRound: 0,
+      maxRounds: MAX_ROUNDS,
+      roundScores: {},
+      roundWinnerId: null,
     };
   }
 
@@ -99,6 +106,9 @@ export class GameLobby {
       case 'join':
         this.handleJoin(ws, playerId, msg.playerName);
         break;
+      case 'rename':
+        this.handleRename(playerId, msg.playerName);
+        break;
       case 'start_game':
         this.handleStartGame(playerId);
         break;
@@ -152,11 +162,23 @@ export class GameLobby {
       worldPos: { x: startPos.x, z: startPos.z },
       velocity: { x: 0, z: 0 },
       dashCooldown: 0,
+      isDashing: false,
+      dashActiveTimer: 0,
     };
     this.sessions.set(playerId, session);
 
     this.send(ws, { type: 'joined', playerId, lobbyState: this.lobbyState });
     this.broadcast({ type: 'lobby_update', lobbyState: this.lobbyState }, playerId);
+  }
+
+  private handleRename(playerId: string, playerName: string): void {
+    if (this.lobbyState.status !== 'waiting') return;
+    const player = this.lobbyState.players.find(p => p.id === playerId);
+    if (!player) return;
+    const newName = playerName.trim().substring(0, 16) || player.name;
+    player.name = newName;
+    this.broadcastAll({ type: 'player_renamed', playerId, playerName: newName });
+    this.broadcastAll({ type: 'lobby_update', lobbyState: this.lobbyState });
   }
 
   private handleStartGame(playerId: string): void {
@@ -165,13 +187,24 @@ export class GameLobby {
     if (this.lobbyState.players.length < 1) return;
     if (this.lobbyState.status !== 'waiting') return;
 
+    // Initialise round scores for all current players
+    const roundScores: Record<string, number> = {};
+    this.lobbyState.players.forEach(p => { roundScores[p.id] = 0; });
+    this.lobbyState.roundScores = roundScores;
+    this.lobbyState.currentRound = 1;
+    this.lobbyState.roundWinnerId = null;
+    this.lobbyState.winner = null;
+
+    this.startRound();
+  }
+
+  private startRound(): void {
     this.lobbyState.status = 'playing';
     this.lobbyState.tiles = this.initTiles();
     this.lobbyState.gameTime = 0;
-    this.lobbyState.winner = null;
     this.fallCount = 0;
 
-    // Reset player positions
+    // Reset player positions and state
     const startPositions = [
       { x: 1, z: 1 }, { x: 8, z: 8 }, { x: 1, z: 8 }, { x: 8, z: 1 }
     ];
@@ -183,11 +216,12 @@ export class GameLobby {
         session.worldPos = { x: startPositions[i].x, z: startPositions[i].z };
         session.velocity = { x: 0, z: 0 };
         session.dashCooldown = 0;
+        session.isDashing = false;
+        session.dashActiveTimer = 0;
       }
     });
 
-    // Countdown: 3 -> 2 -> 1 -> start
-    // Clear any existing countdowns
+    // Countdown: 3 -> 2 -> 1 -> GO
     for (const t of this.countdownTimeouts) clearTimeout(t);
     this.countdownTimeouts = [];
 
@@ -217,10 +251,10 @@ export class GameLobby {
     let lastTick = Date.now();
     let tileFallAccumulator = 0;
 
-    const INITIAL_FALL_INTERVAL = 5000;
-    const MIN_FALL_INTERVAL = 1500;
+    const INITIAL_FALL_INTERVAL = 7000;
+    const MIN_FALL_INTERVAL = 2000;
     const FALLS_PER_ACCELERATION = 4;
-    const INTERVAL_DECREASE = 250;
+    const INTERVAL_DECREASE = 200;
     const getCurrentInterval = () =>
       Math.max(MIN_FALL_INTERVAL, INITIAL_FALL_INTERVAL - Math.floor(this.fallCount / FALLS_PER_ACCELERATION) * INTERVAL_DECREASE);
 
@@ -247,17 +281,52 @@ export class GameLobby {
       // Check eliminations
       this.checkEliminations();
 
-      // Check win condition
+      // Check round win condition
       const alivePlayers = this.lobbyState.players.filter(p => p.isAlive);
       if (alivePlayers.length <= 1) {
-        const winner = alivePlayers[0] || null;
-        this.lobbyState.winner = winner?.id || null;
-        this.lobbyState.status = 'finished';
-        this.broadcastAll({ type: 'game_over', winner: winner || null, lobbyState: this.lobbyState });
+        const roundWinner = alivePlayers[0] || null;
 
         if (this.gameInterval) {
           clearInterval(this.gameInterval);
           this.gameInterval = null;
+        }
+
+        // Award round point
+        if (roundWinner) {
+          this.lobbyState.roundScores[roundWinner.id] =
+            (this.lobbyState.roundScores[roundWinner.id] ?? 0) + 1;
+          this.lobbyState.roundWinnerId = roundWinner.id;
+        } else {
+          this.lobbyState.roundWinnerId = null;
+        }
+
+        // Check if match is over (best of MAX_ROUNDS)
+        const maxWins = Math.ceil(this.lobbyState.maxRounds / 2);
+        const someoneWonMatch = roundWinner &&
+          (this.lobbyState.roundScores[roundWinner.id] ?? 0) >= maxWins;
+        const allRoundsPlayed = this.lobbyState.currentRound >= this.lobbyState.maxRounds;
+
+        if (someoneWonMatch || allRoundsPlayed) {
+          // Determine overall match winner (most round wins)
+          let matchWinner: Player | null = null;
+          let topWins = -1;
+          for (const p of this.lobbyState.players) {
+            const wins = this.lobbyState.roundScores[p.id] ?? 0;
+            if (wins > topWins) { topWins = wins; matchWinner = p; }
+          }
+          this.lobbyState.winner = matchWinner?.id ?? null;
+          this.lobbyState.status = 'finished';
+          this.broadcastAll({ type: 'game_over', winner: matchWinner || null, lobbyState: this.lobbyState });
+        } else {
+          // Show round-over screen, then start the next round after a delay
+          this.lobbyState.status = 'round_over';
+          this.broadcastAll({ type: 'game_state', lobbyState: this.lobbyState });
+
+          const nextRoundTimeout = setTimeout(() => {
+            this.lobbyState.currentRound += 1;
+            this.startRound();
+          }, 4000);
+          this.countdownTimeouts.push(nextRoundTimeout);
         }
         return;
       }
@@ -285,8 +354,11 @@ export class GameLobby {
     this.lobbyState.tiles = this.initTiles();
     this.lobbyState.gameTime = 0;
     this.lobbyState.winner = null;
-    this.lobbyState.nextTileFallIn = 5000;
+    this.lobbyState.nextTileFallIn = 7000;
     this.lobbyState.countdown = undefined;
+    this.lobbyState.currentRound = 0;
+    this.lobbyState.roundScores = {};
+    this.lobbyState.roundWinnerId = null;
     this.fallCount = 0;
 
     const startPositions = [
@@ -301,6 +373,8 @@ export class GameLobby {
         session.worldPos = { x: startPositions[i].x, z: startPositions[i].z };
         session.velocity = { x: 0, z: 0 };
         session.dashCooldown = 0;
+        session.isDashing = false;
+        session.dashActiveTimer = 0;
       }
     });
 
@@ -309,14 +383,19 @@ export class GameLobby {
 
   private processMovement(dt: number): void {
     const speed = PLAYER_SPEED * (dt / TICK_RATE);
+    const DASH_ACTIVE_WINDOW = 350; // ms that a dash counts as "active" for boosted collisions
 
     for (const [playerId, session] of this.sessions) {
       const player = this.lobbyState.players.find(p => p.id === playerId);
       if (!player || !player.isAlive) continue;
 
-      // Update dash cooldown
+      // Update dash cooldown and active timer
       if (session.dashCooldown > 0) {
         session.dashCooldown -= dt;
+      }
+      if (session.dashActiveTimer > 0) {
+        session.dashActiveTimer -= dt;
+        if (session.dashActiveTimer <= 0) session.isDashing = false;
       }
 
       // Apply input to velocity
@@ -338,6 +417,8 @@ export class GameLobby {
         session.velocity.x += inputX * DASH_FORCE;
         session.velocity.z += inputZ * DASH_FORCE;
         session.dashCooldown = DASH_COOLDOWN_MS;
+        session.isDashing = true;
+        session.dashActiveTimer = DASH_ACTIVE_WINDOW;
       }
 
       // Add movement to velocity
@@ -348,8 +429,8 @@ export class GameLobby {
       session.velocity.x *= 0.85;
       session.velocity.z *= 0.85;
 
-      // Clamp velocity
-      const maxVel = 0.5;
+      // Clamp velocity (higher cap during dash for more satisfying pushes)
+      const maxVel = session.isDashing ? 0.7 : 0.5;
       session.velocity.x = Math.max(-maxVel, Math.min(maxVel, session.velocity.x));
       session.velocity.z = Math.max(-maxVel, Math.min(maxVel, session.velocity.z));
 
@@ -392,7 +473,8 @@ export class GameLobby {
           otherSession.worldPos.x -= nx * overlap * 0.5;
           otherSession.worldPos.z -= nz * overlap * 0.5;
 
-          const velTransfer = 0.3;
+          // Boosted velocity transfer when the attacker is actively dashing
+          const velTransfer = session.isDashing ? 0.55 : 0.3;
           const relVelX = session.velocity.x - otherSession.velocity.x;
           const relVelZ = session.velocity.z - otherSession.velocity.z;
           const relVelDotN = relVelX * nx + relVelZ * nz;

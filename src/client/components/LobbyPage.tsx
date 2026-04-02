@@ -17,6 +17,8 @@ export default function LobbyPage({
   const [connected, setConnected] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState('');
+  const [editingName, setEditingName] = useState(false);
+  const [newName, setNewName] = useState(playerName);
   const wsRef = useRef<WebSocket | null>(null);
   const hasConnected = useRef(false);
 
@@ -63,6 +65,16 @@ export default function LobbyPage({
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
+  };
+
+  const handleRenameSubmit = () => {
+    const trimmed = newName.trim().substring(0, 16);
+    if (!trimmed) return;
+    const socket = ws || wsRef.current;
+    if (!socket) return;
+    const msg: ClientMessage = { type: 'rename', playerName: trimmed };
+    socket.send(JSON.stringify(msg));
+    setEditingName(false);
   };
 
   const myPlayer = lobbyState?.players.find(p => p.id === playerId);
@@ -117,7 +129,37 @@ export default function LobbyPage({
                           style={{ background: colorMap[player.color], color: colorMap[player.color] }}
                         />
                         <div className="player-info">
-                          <div className="player-name">{player.name}</div>
+                          {player.id === playerId && editingName ? (
+                            <div className="rename-form">
+                              <input
+                                className="rename-input"
+                                type="text"
+                                value={newName}
+                                onChange={e => setNewName(e.target.value)}
+                                maxLength={16}
+                                autoFocus
+                                onKeyDown={e => {
+                                  if (e.key === 'Enter') handleRenameSubmit();
+                                  if (e.key === 'Escape') setEditingName(false);
+                                }}
+                              />
+                              <button className="rename-confirm" onClick={handleRenameSubmit} title="Confirm">✓</button>
+                              <button className="rename-cancel" onClick={() => setEditingName(false)} title="Cancel">✕</button>
+                            </div>
+                          ) : (
+                            <div className="player-name-row">
+                              <div className="player-name">{player.name}</div>
+                              {player.id === playerId && (
+                                <button
+                                  className="rename-btn"
+                                  onClick={() => { setNewName(player.name); setEditingName(true); }}
+                                  title="Change name"
+                                >
+                                  ✏️
+                                </button>
+                              )}
+                            </div>
+                          )}
                           <div className="player-badges">
                             {player.isHost && <span className="badge badge-host">Host</span>}
                             {player.id === playerId && <span className="badge badge-you">You</span>}
@@ -131,6 +173,23 @@ export default function LobbyPage({
                 ))}
               </div>
             </div>
+
+            {/* How to play / rules */}
+            <details className="rules-section">
+              <summary className="rules-summary">📖 How to Play</summary>
+              <div className="rules-body">
+                <p><strong>Goal:</strong> Be the last player standing. Win <strong>3 out of 5 rounds</strong> to win the match.</p>
+                <ul>
+                  <li>🎮 <strong>Move</strong> with <kbd>WASD</kbd> or arrow keys.</li>
+                  <li>⚡ <strong>Dash</strong> with <kbd>Space</kbd> — launches you in your movement direction. Dashing into an opponent sends them flying! (1.2 s cooldown)</li>
+                  <li>🟧 <strong>Tiles</strong> turn orange and crumble beneath you — standing on a fallen tile means instant elimination.</li>
+                  <li>💥 <strong>Knock</strong> opponents off the edge or onto fallen tiles to eliminate them.</li>
+                  <li>⏩ The platform shrinks faster over time — the longer the round goes, the more chaotic it gets!</li>
+                  <li>🏆 Scores carry over between rounds. The player with the most round wins after 5 rounds (or first to 3) wins the match.</li>
+                </ul>
+                <p style={{ opacity: 0.6, fontSize: '0.78rem' }}>💡 Tip: Use the edges of the arena to your advantage — corner opponents near crumbling tiles before dashing!</p>
+              </div>
+            </details>
 
             <div style={{ marginBottom: '1rem', padding: '0.75rem', background: 'rgba(0,255,255,0.03)', borderRadius: '6px', fontSize: '0.8rem', color: 'rgba(200,200,255,0.5)', lineHeight: '1.5' }}>
               {isHost

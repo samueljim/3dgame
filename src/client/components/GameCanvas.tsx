@@ -3,7 +3,7 @@ import { gsap } from 'gsap';
 import { NeonFallGame } from '../game/NeonFall';
 import { SoundManager } from '../game/SoundManager';
 import type { LobbyState, ServerMessage } from '@shared/types';
-import { DASH_COOLDOWN_MS } from '@shared/types';
+import { DASH_COOLDOWN_MS, MAX_ROUNDS } from '@shared/types';
 
 interface GameCanvasProps {
   lobbyState: LobbyState;
@@ -216,6 +216,15 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     ? currentState.players.find(p => p.id === currentState.winner)
     : null;
 
+  const roundWinnerPlayer = currentState.roundWinnerId
+    ? currentState.players.find(p => p.id === currentState.roundWinnerId)
+    : null;
+
+  const isRoundOver = currentState.status === 'round_over';
+  // Use client-side MAX_ROUNDS as the hard cap for star display to avoid repeat() with server-provided lengths
+  const STAR_COUNT = Math.ceil(MAX_ROUNDS / 2); // always ≤ 3 based on the constant
+  const maxWins = STAR_COUNT;
+
   return (
     <div className="game-wrapper">
       <canvas ref={canvasRef} className="game-canvas" />
@@ -230,16 +239,30 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
       {/* HUD */}
       <div className="game-hud">
         <div className="hud-players">
+          {/* Round indicator */}
+          {currentState.currentRound > 0 && (
+            <div className="hud-round-badge">
+              Round {currentState.currentRound}/{currentState.maxRounds ?? MAX_ROUNDS}
+            </div>
+          )}
           {currentState.players.map(player => {
             const cooldownPct = player.dashCooldown
               ? Math.max(0, Math.min(1, player.dashCooldown / DASH_MAX_COOLDOWN))
               : 0;
+            const playerWins = currentState.roundScores?.[player.id] ?? 0;
             return (
               <div key={player.id} className={`hud-player ${!player.isAlive ? 'eliminated' : ''}`}>
                 <div className={`hud-dot ${colorDotClass[player.color]}`} />
                 <div className="hud-player-info">
-                  <span>{player.name}</span>
-                  {player.id === playerId && <span style={{ color: 'rgba(200,200,255,0.5)', fontSize: '0.7rem' }}>(you)</span>}
+                  <div className="hud-player-name-row">
+                    <span>{player.name}</span>
+                    {player.id === playerId && <span style={{ color: 'rgba(200,200,255,0.5)', fontSize: '0.7rem' }}>(you)</span>}
+                    {currentState.currentRound > 0 && (
+                      <span className="hud-wins" title="Round wins">
+                        {Array.from({ length: STAR_COUNT }, (_, i) => i < playerWins ? '★' : '☆').join('')}
+                      </span>
+                    )}
+                  </div>
                   {player.id === playerId && (
                     <div className="hud-dash-bar">
                       <div
@@ -310,6 +333,39 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
         <div className="elimination-toast">💥 {showElimination}</div>
       )}
 
+      {/* Between-rounds overlay */}
+      {isRoundOver && !gameOver && (
+        <div className="game-overlay round-over-overlay">
+          <div className="overlay-title round-over-title">
+            {roundWinnerPlayer
+              ? `Round ${currentState.currentRound} Over!`
+              : `Round ${currentState.currentRound} — Draw!`}
+          </div>
+          {roundWinnerPlayer && (
+            <div className="overlay-winner" style={{ color: colorTextStyle[roundWinnerPlayer.color] ?? '#fff' }}>
+              🏅 {roundWinnerPlayer.name} wins the round!
+            </div>
+          )}
+          <div className="round-scores">
+            {currentState.players.map(p => {
+              const wins = currentState.roundScores?.[p.id] ?? 0;
+              return (
+                <div key={p.id} className="round-score-row" style={{ color: colorTextStyle[p.color] }}>
+                  <span className="round-score-name">{p.name}</span>
+                  <span className="round-score-stars">
+                    {Array.from({ length: STAR_COUNT }, (_, i) => i < wins ? '★' : '☆').join('')}
+                  </span>
+                  <span className="round-score-count">{wins} win{wins !== 1 ? 's' : ''}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="overlay-subtitle" style={{ marginTop: '1rem' }}>
+            Next round starting soon…
+          </div>
+        </div>
+      )}
+
       {gameOver && (
         <div className="game-overlay">
           <div className="overlay-title">
@@ -317,18 +373,35 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
           </div>
           {winnerPlayer ? (
             <div className="overlay-winner" style={{ color: colorTextStyle[winnerPlayer.color] ?? '#fff' }}>
-              🥇 {winnerPlayer.name} wins!
+              🥇 {winnerPlayer.name} wins the match!
             </div>
           ) : (
             <div className="overlay-subtitle">Everyone fell off!</div>
           )}
-          <div className="overlay-subtitle">
-            Survived: {Math.floor(currentState.gameTime)}s
+          {/* Final scoreboard */}
+          <div className="round-scores">
+            {[...currentState.players]
+              .sort((a, b) => (currentState.roundScores?.[b.id] ?? 0) - (currentState.roundScores?.[a.id] ?? 0))
+              .map(p => {
+                const wins = currentState.roundScores?.[p.id] ?? 0;
+                return (
+                  <div key={p.id} className="round-score-row" style={{ color: colorTextStyle[p.color] }}>
+                    <span className="round-score-name">{p.name}</span>
+                    <span className="round-score-stars">
+                      {Array.from({ length: STAR_COUNT }, (_, i) => i < wins ? '★' : '☆').join('')}
+                    </span>
+                    <span className="round-score-count">{wins} win{wins !== 1 ? 's' : ''}</span>
+                  </div>
+                );
+              })}
+          </div>
+          <div className="overlay-subtitle" style={{ marginTop: '0.5rem' }}>
+            Survived: {Math.floor(currentState.gameTime)}s total
           </div>
           <div className="overlay-buttons">
             {myPlayer?.isHost && (
               <button className="btn btn-secondary" onClick={handleRestartGame}>
-                🔄 Restart Game
+                🔄 Play Again
               </button>
             )}
             <button className="btn btn-primary" onClick={onGameOver}>

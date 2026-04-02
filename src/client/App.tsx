@@ -48,6 +48,11 @@ export default function App() {
         case 'game_over':
           setLobbyState(msg.lobbyState);
           break;
+        case 'player_renamed':
+          if (msg.playerId === playerId) {
+            setPlayerName(msg.playerName);
+          }
+          break;
         case 'player_eliminated':
           // Handled in GameCanvas
           break;
@@ -56,7 +61,7 @@ export default function App() {
 
     ws.addEventListener('message', handleMessage);
     return () => ws.removeEventListener('message', handleMessage);
-  }, [ws, appState]);
+  }, [ws, appState, playerId]);
 
   const handleCreateLobby = async (name: string) => {
     try {

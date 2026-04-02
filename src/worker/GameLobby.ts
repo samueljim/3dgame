@@ -29,18 +29,11 @@ export class GameLobby {
   }
 
   private createInitialLobbyState(): LobbyState {
-    const tiles: TileState[][] = [];
-    for (let x = 0; x < ARENA_SIZE; x++) {
-      tiles[x] = [];
-      for (let z = 0; z < ARENA_SIZE; z++) {
-        tiles[x][z] = { x, z, state: 'solid' };
-      }
-    }
     return {
       lobbyId: this.lobbyId,
       players: [],
       status: 'waiting',
-      tiles,
+      tiles: this.initTiles(),
       gameTime: 0,
       winner: null,
       nextTileFallIn: TILE_FALL_INTERVAL,

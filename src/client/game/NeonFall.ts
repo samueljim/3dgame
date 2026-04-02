@@ -188,14 +188,14 @@ export class NeonFallGame {
 
     const arenaW = ARENA_SIZE * TILE_SIZE;
     const y = 0.2;
-    const offset = TILE_SIZE / 2 - TILE_SIZE / 2;
+    const half = TILE_SIZE / 2;
 
     const points = [
-      new THREE.Vector3(-TILE_SIZE / 2 + offset, y, -TILE_SIZE / 2 + offset),
-      new THREE.Vector3(arenaW - TILE_SIZE / 2 + offset, y, -TILE_SIZE / 2 + offset),
-      new THREE.Vector3(arenaW - TILE_SIZE / 2 + offset, y, arenaW - TILE_SIZE / 2 + offset),
-      new THREE.Vector3(-TILE_SIZE / 2 + offset, y, arenaW - TILE_SIZE / 2 + offset),
-      new THREE.Vector3(-TILE_SIZE / 2 + offset, y, -TILE_SIZE / 2 + offset),
+      new THREE.Vector3(-half, y, -half),
+      new THREE.Vector3(arenaW - half, y, -half),
+      new THREE.Vector3(arenaW - half, y, arenaW - half),
+      new THREE.Vector3(-half, y, arenaW - half),
+      new THREE.Vector3(-half, y, -half),
     ];
 
     const edgeGeo = new THREE.BufferGeometry().setFromPoints(points);

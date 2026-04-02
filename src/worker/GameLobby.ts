@@ -4,7 +4,7 @@ import type {
 } from '../shared/types';
 import {
   PLAYER_COLORS, ARENA_SIZE, PLAYER_SPEED, DASH_FORCE,
-  TICK_RATE, TILE_FALL_INTERVAL, TILES_PER_FALL
+  TICK_RATE, TILES_PER_FALL, TILE_CRUMBLE_WARNING, DASH_COOLDOWN_MS
 } from '../shared/types';
 
 interface PlayerSession {
@@ -22,6 +22,8 @@ export class GameLobby {
   private lobbyState: LobbyState;
   private gameInterval: ReturnType<typeof setInterval> | null = null;
   private lobbyId: string = '';
+  private fallCount: number = 0;
+  private countdownTimeouts: ReturnType<typeof setTimeout>[] = [];
 
   constructor(state: DurableObjectState) {
     this.state = state;
@@ -36,7 +38,7 @@ export class GameLobby {
       tiles: this.initTiles(),
       gameTime: 0,
       winner: null,
-      nextTileFallIn: TILE_FALL_INTERVAL,
+      nextTileFallIn: 5000,
     };
   }
 
@@ -99,6 +101,9 @@ export class GameLobby {
         break;
       case 'start_game':
         this.handleStartGame(playerId);
+        break;
+      case 'restart_game':
+        this.handleRestartGame(playerId);
         break;
       case 'input':
         this.handleInput(playerId, msg.keys);
@@ -164,6 +169,7 @@ export class GameLobby {
     this.lobbyState.tiles = this.initTiles();
     this.lobbyState.gameTime = 0;
     this.lobbyState.winner = null;
+    this.fallCount = 0;
 
     // Reset player positions
     const startPositions = [
@@ -180,11 +186,38 @@ export class GameLobby {
       }
     });
 
+    // Countdown: 3 -> 2 -> 1 -> start
+    // Clear any existing countdowns
+    for (const t of this.countdownTimeouts) clearTimeout(t);
+    this.countdownTimeouts = [];
+
+    this.lobbyState.countdown = 3;
     this.broadcastAll({ type: 'game_state', lobbyState: this.lobbyState });
 
-    // Start game loop
+    const t1 = setTimeout(() => {
+      this.lobbyState.countdown = 2;
+      this.broadcastAll({ type: 'game_state', lobbyState: this.lobbyState });
+    }, 1000);
+
+    const t2 = setTimeout(() => {
+      this.lobbyState.countdown = 1;
+      this.broadcastAll({ type: 'game_state', lobbyState: this.lobbyState });
+    }, 2000);
+
+    const t3 = setTimeout(() => {
+      this.lobbyState.countdown = 0;
+      this.broadcastAll({ type: 'game_state', lobbyState: this.lobbyState });
+      this.startGameLoop();
+    }, 3000);
+
+    this.countdownTimeouts.push(t1, t2, t3);
+  }
+
+  private startGameLoop(): void {
     let lastTick = Date.now();
     let tileFallAccumulator = 0;
+
+    const getCurrentInterval = () => Math.max(1500, 5000 - Math.floor(this.fallCount / 4) * 250);
 
     this.gameInterval = setInterval(() => {
       const now = Date.now();
@@ -198,11 +231,13 @@ export class GameLobby {
       this.processMovement(dt);
 
       // Tile falling logic
-      if (tileFallAccumulator >= TILE_FALL_INTERVAL) {
+      const currentInterval = getCurrentInterval();
+      if (tileFallAccumulator >= currentInterval) {
         tileFallAccumulator = 0;
         this.dropRandomTiles();
+        this.fallCount++;
       }
-      this.lobbyState.nextTileFallIn = TILE_FALL_INTERVAL - tileFallAccumulator;
+      this.lobbyState.nextTileFallIn = currentInterval - tileFallAccumulator;
 
       // Check eliminations
       this.checkEliminations();
@@ -225,6 +260,46 @@ export class GameLobby {
       // Broadcast game state
       this.broadcastAll({ type: 'game_state', lobbyState: this.lobbyState });
     }, TICK_RATE);
+  }
+
+  private handleRestartGame(playerId: string): void {
+    const player = this.lobbyState.players.find(p => p.id === playerId);
+    if (!player?.isHost) return;
+    if (this.lobbyState.status !== 'finished') return;
+
+    // Stop game loop if running
+    if (this.gameInterval) {
+      clearInterval(this.gameInterval);
+      this.gameInterval = null;
+    }
+    for (const t of this.countdownTimeouts) clearTimeout(t);
+    this.countdownTimeouts = [];
+
+    // Reset to waiting state
+    this.lobbyState.status = 'waiting';
+    this.lobbyState.tiles = this.initTiles();
+    this.lobbyState.gameTime = 0;
+    this.lobbyState.winner = null;
+    this.lobbyState.nextTileFallIn = 5000;
+    this.lobbyState.countdown = undefined;
+    this.fallCount = 0;
+
+    const startPositions = [
+      { x: 1, z: 1 }, { x: 8, z: 8 }, { x: 1, z: 8 }, { x: 8, z: 1 }
+    ];
+    this.lobbyState.players.forEach((p, i) => {
+      p.isAlive = true;
+      p.score = 0;
+      p.position = startPositions[i];
+      const session = this.sessions.get(p.id);
+      if (session) {
+        session.worldPos = { x: startPositions[i].x, z: startPositions[i].z };
+        session.velocity = { x: 0, z: 0 };
+        session.dashCooldown = 0;
+      }
+    });
+
+    this.broadcastAll({ type: 'lobby_update', lobbyState: this.lobbyState });
   }
 
   private processMovement(dt: number): void {
@@ -257,7 +332,7 @@ export class GameLobby {
       if (session.keys.space && session.dashCooldown <= 0 && (inputX !== 0 || inputZ !== 0)) {
         session.velocity.x += inputX * DASH_FORCE;
         session.velocity.z += inputZ * DASH_FORCE;
-        session.dashCooldown = 1200; // 1.2 second cooldown
+        session.dashCooldown = DASH_COOLDOWN_MS; // 1.2 second cooldown
       }
 
       // Add movement to velocity
@@ -289,6 +364,9 @@ export class GameLobby {
       player.position.x = Math.max(0, Math.min(ARENA_SIZE - 1, player.position.x));
       player.position.z = Math.max(0, Math.min(ARENA_SIZE - 1, player.position.z));
 
+      // Expose dash cooldown to player
+      player.dashCooldown = Math.max(0, session.dashCooldown);
+
       // Check collision with other players
       for (const [otherId, otherSession] of this.sessions) {
         if (otherId === playerId) continue;
@@ -300,7 +378,6 @@ export class GameLobby {
         const dist = Math.sqrt(dx * dx + dz * dz);
 
         if (dist < 0.8 && dist > 0.001) {
-          // Collision response
           const nx = dx / dist;
           const nz = dz / dist;
           const overlap = 0.8 - dist;
@@ -310,7 +387,6 @@ export class GameLobby {
           otherSession.worldPos.x -= nx * overlap * 0.5;
           otherSession.worldPos.z -= nz * overlap * 0.5;
 
-          // Transfer momentum
           const velTransfer = 0.3;
           const relVelX = session.velocity.x - otherSession.velocity.x;
           const relVelZ = session.velocity.z - otherSession.velocity.z;
@@ -339,7 +415,6 @@ export class GameLobby {
 
     if (solidTiles.length === 0) return;
 
-    // Shuffle and pick tiles to fall
     for (let i = solidTiles.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [solidTiles[i], solidTiles[j]] = [solidTiles[j], solidTiles[i]];
@@ -348,7 +423,16 @@ export class GameLobby {
     const tilesToFall = Math.min(TILES_PER_FALL, solidTiles.length);
     for (let i = 0; i < tilesToFall; i++) {
       const tile = solidTiles[i];
-      this.lobbyState.tiles[tile.x][tile.z] = { x: tile.x, z: tile.z, state: 'fallen' };
+      // Mark as crumbling first
+      this.lobbyState.tiles[tile.x][tile.z] = { x: tile.x, z: tile.z, state: 'crumbling', crumbling: true };
+      // Schedule transition to fallen after TILE_CRUMBLE_WARNING ms
+      const tx = tile.x;
+      const tz = tile.z;
+      setTimeout(() => {
+        if (this.lobbyState.tiles[tx][tz].state === 'crumbling') {
+          this.lobbyState.tiles[tx][tz] = { x: tx, z: tz, state: 'fallen' };
+        }
+      }, TILE_CRUMBLE_WARNING);
     }
   }
 
@@ -357,7 +441,6 @@ export class GameLobby {
       const player = this.lobbyState.players.find(p => p.id === playerId);
       if (!player || !player.isAlive) continue;
 
-      // Check if player is out of bounds
       if (
         session.worldPos.x < -0.4 || session.worldPos.x > ARENA_SIZE - 0.6 ||
         session.worldPos.z < -0.4 || session.worldPos.z > ARENA_SIZE - 0.6
@@ -366,7 +449,6 @@ export class GameLobby {
         continue;
       }
 
-      // Check if player is on a fallen tile
       const tileX = Math.round(session.worldPos.x);
       const tileZ = Math.round(session.worldPos.z);
       if (
@@ -403,11 +485,9 @@ export class GameLobby {
 
       if (this.lobbyState.status === 'waiting') {
         this.lobbyState.players.splice(playerIndex, 1);
-        // Reassign host if needed
         if (player.isHost && this.lobbyState.players.length > 0) {
           this.lobbyState.players[0].isHost = true;
         }
-        // Reassign colors
         this.lobbyState.players.forEach((p, i) => {
           p.color = PLAYER_COLORS[i];
         });
@@ -425,7 +505,7 @@ export class GameLobby {
   private send(ws: WebSocket, msg: ServerMessage): void {
     try {
       ws.send(JSON.stringify(msg));
-    } catch (_e) {
+    } catch (e) {
       // WebSocket might be closed
     }
   }

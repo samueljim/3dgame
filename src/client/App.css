@@ -640,3 +640,146 @@ body {
   .hud-controls { display: none; }
   .game-title { font-size: 3rem; }
 }
+
+/* ===== COUNTDOWN OVERLAY ===== */
+.countdown-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 100;
+}
+
+.countdown-number {
+  font-family: var(--font-title);
+  font-size: clamp(6rem, 20vw, 12rem);
+  font-weight: 900;
+  text-shadow:
+    0 0 20px currentColor,
+    0 0 60px currentColor;
+  color: var(--neon-cyan);
+  transform-origin: center center;
+}
+
+/* ===== DASH BAR ===== */
+.hud-player-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.hud-dash-bar {
+  width: 60px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.hud-dash-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--neon-cyan), var(--neon-purple));
+  border-radius: 2px;
+  transition: width 0.05s linear;
+  box-shadow: 0 0 4px var(--neon-cyan);
+}
+
+/* ===== MUTE BUTTON ===== */
+.hud-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.mute-btn {
+  background: rgba(0, 20, 40, 0.7);
+  border: 1px solid var(--border-neon);
+  border-radius: 8px;
+  color: #fff;
+  font-size: 1.2rem;
+  width: 2.2rem;
+  height: 2.2rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+  padding: 0;
+}
+
+.mute-btn:hover {
+  background: rgba(0, 255, 255, 0.1);
+}
+
+/* ===== MOBILE CONTROLS ===== */
+.mobile-controls {
+  display: none;
+  position: fixed;
+  bottom: 2rem;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  z-index: 50;
+  justify-content: space-between;
+  padding: 0 2rem;
+  align-items: flex-end;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .mobile-controls {
+    display: flex;
+  }
+}
+
+.joystick-area {
+  width: 110px;
+  height: 110px;
+  background: rgba(0, 255, 255, 0.08);
+  border: 2px solid rgba(0, 255, 255, 0.3);
+  border-radius: 50%;
+  position: relative;
+  pointer-events: all;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+}
+
+.joystick-thumb {
+  width: 44px;
+  height: 44px;
+  background: radial-gradient(circle, rgba(0,255,255,0.7), rgba(0,150,255,0.4));
+  border: 2px solid var(--neon-cyan);
+  border-radius: 50%;
+  box-shadow: 0 0 12px var(--neon-cyan);
+  transition: transform 0.05s;
+  pointer-events: none;
+}
+
+.dash-btn {
+  width: 90px;
+  height: 90px;
+  background: radial-gradient(circle, rgba(191,95,255,0.3), rgba(100,0,200,0.15));
+  border: 2px solid var(--neon-purple);
+  border-radius: 50%;
+  color: var(--neon-purple);
+  font-family: var(--font-title);
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  pointer-events: all;
+  box-shadow: 0 0 16px rgba(191,95,255,0.3);
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.dash-btn:active {
+  background: radial-gradient(circle, rgba(191,95,255,0.6), rgba(100,0,200,0.4));
+  box-shadow: 0 0 28px var(--neon-purple);
+}

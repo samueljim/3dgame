@@ -11,6 +11,7 @@ export interface Player {
   isAlive: boolean;
   position: { x: number; z: number }; // grid position
   score: number;
+  dashCooldown?: number;
 }
 
 export interface TileState {
@@ -18,6 +19,7 @@ export interface TileState {
   z: number;
   state: 'solid' | 'crumbling' | 'fallen';
   fallTimer?: number; // ms until fall
+  crumbling?: boolean;
 }
 
 export type LobbyStatus = 'waiting' | 'playing' | 'finished';
@@ -30,12 +32,14 @@ export interface LobbyState {
   gameTime: number;        // seconds elapsed
   winner: string | null;   // player id
   nextTileFallIn: number;  // ms
+  countdown?: number;
 }
 
 // Client -> Server messages
 export type ClientMessage =
   | { type: 'join'; playerName: string }
   | { type: 'start_game' }
+  | { type: 'restart_game' }
   | { type: 'input'; keys: { w: boolean; a: boolean; s: boolean; d: boolean; space: boolean } }
   | { type: 'ping' };
 
@@ -56,3 +60,5 @@ export const DASH_FORCE = 3.0;
 export const TICK_RATE = 50; // ms
 export const TILE_FALL_INTERVAL = 5000; // ms between tile falls
 export const TILES_PER_FALL = 2;
+export const TILE_CRUMBLE_WARNING = 2000;
+export const DASH_COOLDOWN_MS = 1200;

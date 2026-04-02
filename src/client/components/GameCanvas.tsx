@@ -3,7 +3,7 @@ import { gsap } from 'gsap';
 import { NeonFallGame } from '../game/NeonFall';
 import { SoundManager } from '../game/SoundManager';
 import type { LobbyState, ServerMessage } from '@shared/types';
-import { DASH_COOLDOWN_MS, MAX_ROUNDS } from '@shared/types';
+import { DASH_COOLDOWN_MS, MAX_ROUNDS, BLAST_COOLDOWN_MS } from '@shared/types';
 
 interface GameCanvasProps {
   lobbyState: LobbyState;
@@ -13,6 +13,7 @@ interface GameCanvasProps {
 }
 
 const DASH_MAX_COOLDOWN = DASH_COOLDOWN_MS;
+const BLAST_MAX_COOLDOWN = BLAST_COOLDOWN_MS;
 
 export default function GameCanvas({ lobbyState: initialState, playerId, ws, onGameOver }: GameCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -178,6 +179,15 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     gameRef.current?.setKeys({ space: false });
   }, []);
 
+  const handleBlastPress = useCallback(() => {
+    soundRef.current.init();
+    gameRef.current?.setKeys({ shift: true });
+  }, []);
+
+  const handleBlastRelease = useCallback(() => {
+    gameRef.current?.setKeys({ shift: false });
+  }, []);
+
   const handleMuteToggle = useCallback(() => {
     soundRef.current.init();
     soundRef.current.toggleMute();
@@ -203,6 +213,10 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     green: 'hud-dot-green',
     yellow: 'hud-dot-yellow',
     purple: 'hud-dot-purple',
+    blue: 'hud-dot-blue',
+    cyan: 'hud-dot-cyan',
+    orange: 'hud-dot-orange',
+    pink: 'hud-dot-pink',
   };
 
   const colorTextStyle: Record<string, string> = {
@@ -210,6 +224,10 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     green: '#44ff44',
     yellow: '#ffff44',
     purple: '#aa44ff',
+    blue: '#4477ff',
+    cyan: '#44ffee',
+    orange: '#ff9944',
+    pink: '#ff44bb',
   };
 
   const winnerPlayer = currentState.winner
@@ -249,6 +267,9 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
             const cooldownPct = player.dashCooldown
               ? Math.max(0, Math.min(1, player.dashCooldown / DASH_MAX_COOLDOWN))
               : 0;
+            const blastCooldownPct = player.blastCooldown
+              ? Math.max(0, Math.min(1, player.blastCooldown / BLAST_MAX_COOLDOWN))
+              : 0;
             const playerWins = currentState.roundScores?.[player.id] ?? 0;
             return (
               <div key={player.id} className={`hud-player ${!player.isAlive ? 'eliminated' : ''}`}>
@@ -264,11 +285,25 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
                     )}
                   </div>
                   {player.id === playerId && (
-                    <div className="hud-dash-bar">
-                      <div
-                        className="hud-dash-fill"
-                        style={{ width: `${(1 - cooldownPct) * 100}%` }}
-                      />
+                    <div className="hud-ability-bars">
+                      <div className="hud-ability-bar-row">
+                        <span className="hud-ability-label">DASH</span>
+                        <div className="hud-dash-bar">
+                          <div
+                            className="hud-dash-fill"
+                            style={{ width: `${(1 - cooldownPct) * 100}%` }}
+                          />
+                        </div>
+                      </div>
+                      <div className="hud-ability-bar-row">
+                        <span className="hud-ability-label">BLAST</span>
+                        <div className="hud-blast-bar">
+                          <div
+                            className="hud-blast-fill"
+                            style={{ width: `${(1 - blastCooldownPct) * 100}%` }}
+                          />
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -301,8 +336,9 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
           </button>
           <div className="hud-controls">
             <div className="controls-title">Controls</div>
-            WASD / Arrows - Move<br />
-            Space - Dash
+            WASD / Arrows — Move<br />
+            Space — Dash<br />
+            Shift — Blast
           </div>
         </div>
       </div>
@@ -319,14 +355,24 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
         >
           <div className="joystick-thumb" ref={joystickThumbRef} />
         </div>
-        <button
-          className="dash-btn"
-          onTouchStart={handleDashPress}
-          onTouchEnd={handleDashRelease}
-          onTouchCancel={handleDashRelease}
-        >
-          DASH
-        </button>
+        <div className="mobile-action-btns">
+          <button
+            className="blast-btn"
+            onTouchStart={handleBlastPress}
+            onTouchEnd={handleBlastRelease}
+            onTouchCancel={handleBlastRelease}
+          >
+            BLAST
+          </button>
+          <button
+            className="dash-btn"
+            onTouchStart={handleDashPress}
+            onTouchEnd={handleDashRelease}
+            onTouchCancel={handleDashRelease}
+          >
+            DASH
+          </button>
+        </div>
       </div>
 
       {showElimination && (

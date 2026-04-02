@@ -1,6 +1,6 @@
-export type PlayerColor = 'red' | 'green' | 'yellow' | 'purple';
+export type PlayerColor = 'red' | 'green' | 'yellow' | 'purple' | 'blue' | 'cyan' | 'orange' | 'pink';
 
-export const PLAYER_COLORS: PlayerColor[] = ['red', 'green', 'yellow', 'purple'];
+export const PLAYER_COLORS: PlayerColor[] = ['red', 'green', 'yellow', 'purple', 'blue', 'cyan', 'orange', 'pink'];
 
 export interface Player {
   id: string;
@@ -12,6 +12,15 @@ export interface Player {
   position: { x: number; z: number }; // grid position
   score: number;
   dashCooldown?: number;
+  blastCooldown?: number;
+  blastActive?: boolean; // true for one server tick when blast fires
+}
+
+export interface GravityWell {
+  id: string;
+  position: { x: number; z: number }; // world position
+  velocity: { x: number; z: number };
+  radius: number; // visual radius
 }
 
 export interface TileState {
@@ -32,6 +41,7 @@ export interface LobbyState {
   winner: string | null;   // player id (final match winner)
   nextTileFallIn: number;  // ms
   countdown?: number;
+  gravityWells: GravityWell[];
   // multi-round fields
   currentRound: number;
   maxRounds: number;
@@ -45,7 +55,7 @@ export type ClientMessage =
   | { type: 'rename'; playerName: string }
   | { type: 'start_game' }
   | { type: 'restart_game' }
-  | { type: 'input'; keys: { w: boolean; a: boolean; s: boolean; d: boolean; space: boolean } }
+  | { type: 'input'; keys: { w: boolean; a: boolean; s: boolean; d: boolean; space: boolean; shift: boolean } }
   | { type: 'ping' };
 
 // Server -> Client messages
@@ -69,3 +79,9 @@ export const TILES_PER_FALL = 2;
 export const TILE_CRUMBLE_WARNING = 2000;
 export const DASH_COOLDOWN_MS = 1200;
 export const MAX_ROUNDS = 5; // first to win ceil(MAX_ROUNDS/2) rounds wins the match
+export const MAX_PLAYERS = 8;
+export const BLAST_COOLDOWN_MS = 2500;
+export const BLAST_FORCE = 2.8;
+export const BLAST_RADIUS = 2.8;
+export const GRAVITY_WELL_PULL = 0.018;
+export const GRAVITY_WELL_INFLUENCE_RADIUS = 3.5;

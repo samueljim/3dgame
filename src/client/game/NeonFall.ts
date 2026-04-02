@@ -11,6 +11,10 @@ const PLAYER_COLORS_HEX: Record<string, number> = {
   green: 0x33ff44,
   yellow: 0xffee33,
   purple: 0xaa33ff,
+  blue: 0x3377ff,
+  cyan: 0x33ffee,
+  orange: 0xff8833,
+  pink: 0xff33aa,
 };
 
 interface PlayerMesh {
@@ -30,6 +34,14 @@ interface DebrisParticle {
   life: number;
 }
 
+interface GravityWellMesh {
+  id: string;
+  sphere: THREE.Mesh;
+  ring1: THREE.Mesh;
+  ring2: THREE.Mesh;
+  light: THREE.PointLight;
+}
+
 export class NeonFallGame {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
@@ -41,8 +53,8 @@ export class NeonFallGame {
   private ws: WebSocket;
   private myPlayerId: string;
   private lobbyState: LobbyState;
-  private keys: { w: boolean; a: boolean; s: boolean; d: boolean; space: boolean } = {
-    w: false, a: false, s: false, d: false, space: false
+  private keys: { w: boolean; a: boolean; s: boolean; d: boolean; space: boolean; shift: boolean } = {
+    w: false, a: false, s: false, d: false, space: false, shift: false
   };
   private lastInputSent = 0;
   private clock: THREE.Clock;
@@ -61,6 +73,9 @@ export class NeonFallGame {
 
   // Track previous tile states for change detection
   private prevTileStates: Map<string, 'solid' | 'crumbling' | 'fallen'> = new Map();
+
+  // Gravity well meshes
+  private gravityWellMeshes: Map<string, GravityWellMesh> = new Map();
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -380,7 +395,30 @@ export class NeonFallGame {
         const curr = tileState.state;
 
         if (curr !== prev) {
-          if (curr === 'crumbling' && prev === 'solid') {
+          if (curr === 'solid' && prev !== 'solid') {
+            // Tile was reset (new round start)
+            const existingMesh = this.tileMeshes[x]?.[z];
+            if (!existingMesh) {
+              // Was fallen — create a fresh mesh
+              const tileGeo = new THREE.BoxGeometry(TILE_SIZE - 0.1, 0.3, TILE_SIZE - 0.1);
+              const mesh = this.createTileMesh(tileGeo, x, z);
+              this.scene.add(mesh);
+              this.tileMeshes[x][z] = mesh;
+            } else {
+              // Was crumbling — reset the material and transform back to normal
+              const isEven = (x + z) % 2 === 0;
+              const mat = existingMesh.material as THREE.MeshStandardMaterial;
+              mat.color.setHex(isEven ? 0x002244 : 0x001833);
+              mat.emissive.setHex(isEven ? 0x001122 : 0x000d1a);
+              mat.emissiveIntensity = 0.5;
+              mat.opacity = 1;
+              mat.transparent = false;
+              existingMesh.position.y = 0;
+              existingMesh.position.x = existingMesh.userData.originalX as number;
+              existingMesh.position.z = existingMesh.userData.originalZ as number;
+              existingMesh.rotation.set(0, 0, 0);
+            }
+          } else if (curr === 'crumbling' && prev === 'solid') {
             const mesh = this.tileMeshes[x]?.[z];
             if (mesh) {
               this.animateCrumblingTile(mesh);
@@ -419,6 +457,14 @@ export class NeonFallGame {
         this.shakeCamera(1.0);
       }
 
+      // Restore visibility when a player respawns (new round)
+      if (player.isAlive && !playerMesh.sphere.visible) {
+        playerMesh.sphere.visible = true;
+        playerMesh.ring.visible = true;
+        playerMesh.trail.visible = true;
+        playerMesh.light.intensity = 1.5;
+      }
+
       if (!player.isAlive) continue;
 
       const targetX = player.position.x * TILE_SIZE;
@@ -446,6 +492,34 @@ export class NeonFallGame {
       playerMesh.trailPositions[idx + 2] = playerMesh.sphere.position.z;
       playerMesh.trailIndex = (playerMesh.trailIndex + 1) % 30;
       (playerMesh.trail.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
+
+      // Blast wave visual
+      if (player.blastActive) {
+        this.spawnBlastWave(playerMesh.sphere.position, player.color);
+      }
+    }
+
+    // Update gravity well meshes
+    for (const well of newState.gravityWells) {
+      let wellMesh = this.gravityWellMeshes.get(well.id);
+      if (!wellMesh) {
+        wellMesh = this.createGravityWellMesh(well.id);
+      }
+      const wx = well.position.x * TILE_SIZE;
+      const wz = well.position.z * TILE_SIZE;
+      wellMesh.sphere.position.x += (wx - wellMesh.sphere.position.x) * 0.2;
+      wellMesh.sphere.position.z += (wz - wellMesh.sphere.position.z) * 0.2;
+      wellMesh.ring1.position.copy(wellMesh.sphere.position);
+      wellMesh.ring2.position.copy(wellMesh.sphere.position);
+      wellMesh.light.position.copy(wellMesh.sphere.position);
+    }
+
+    // Remove gravity well meshes that no longer exist
+    for (const [id, wellMesh] of this.gravityWellMeshes) {
+      if (!newState.gravityWells.find(w => w.id === id)) {
+        this.scene.remove(wellMesh.sphere, wellMesh.ring1, wellMesh.ring2, wellMesh.light);
+        this.gravityWellMeshes.delete(id);
+      }
     }
 
     const myPlayer = newState.players.find(p => p.id === this.myPlayerId);
@@ -564,6 +638,92 @@ export class NeonFallGame {
     }
   }
 
+  private createGravityWellMesh(id: string): GravityWellMesh {
+    const sphereGeo = new THREE.SphereGeometry(0.6, 20, 20);
+    const sphereMat = new THREE.MeshStandardMaterial({
+      color: 0x220033,
+      emissive: 0x8800cc,
+      emissiveIntensity: 1.4,
+      roughness: 0.1,
+      metalness: 0.9,
+      transparent: true,
+      opacity: 0.85,
+    });
+    const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+    sphere.position.y = 1.5;
+    this.scene.add(sphere);
+
+    const ring1Geo = new THREE.TorusGeometry(1.0, 0.05, 8, 48);
+    const ring1Mat = new THREE.MeshStandardMaterial({
+      color: 0xcc00ff,
+      emissive: 0xcc00ff,
+      emissiveIntensity: 1.8,
+      roughness: 0.1,
+      metalness: 0.9,
+    });
+    const ring1 = new THREE.Mesh(ring1Geo, ring1Mat);
+    ring1.rotation.x = Math.PI / 4;
+    ring1.position.copy(sphere.position);
+    this.scene.add(ring1);
+
+    const ring2Geo = new THREE.TorusGeometry(1.2, 0.04, 8, 48);
+    const ring2Mat = new THREE.MeshStandardMaterial({
+      color: 0x8800ff,
+      emissive: 0x8800ff,
+      emissiveIntensity: 1.4,
+      roughness: 0.1,
+      metalness: 0.9,
+    });
+    const ring2 = new THREE.Mesh(ring2Geo, ring2Mat);
+    ring2.rotation.x = -Math.PI / 3;
+    ring2.rotation.y = Math.PI / 6;
+    ring2.position.copy(sphere.position);
+    this.scene.add(ring2);
+
+    const light = new THREE.PointLight(0xcc00ff, 2.0, 8);
+    light.position.copy(sphere.position);
+    this.scene.add(light);
+
+    const wellMesh: GravityWellMesh = { id, sphere, ring1, ring2, light };
+    this.gravityWellMeshes.set(id, wellMesh);
+    return wellMesh;
+  }
+
+  private spawnBlastWave(pos: THREE.Vector3, color: string): void {
+    const colorHex = PLAYER_COLORS_HEX[color] ?? 0xffffff;
+    const ringGeo = new THREE.TorusGeometry(0.2, 0.08, 8, 32);
+    const ringMat = new THREE.MeshStandardMaterial({
+      color: colorHex,
+      emissive: colorHex,
+      emissiveIntensity: 2.5,
+      transparent: true,
+      opacity: 1.0,
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.copy(pos);
+    this.scene.add(ring);
+
+    gsap.to(ring.scale, {
+      x: 14,
+      y: 14,
+      z: 14,
+      duration: 0.45,
+      ease: 'power2.out',
+    });
+    gsap.to(ringMat, {
+      opacity: 0,
+      duration: 0.45,
+      ease: 'power2.in',
+      onComplete: () => {
+        this.scene.remove(ring);
+        ringGeo.dispose();
+        ringMat.dispose();
+      },
+    });
+    this.shakeCamera(0.6);
+  }
+
   private animatePlayerDeath(playerMesh: PlayerMesh, color: string): void {
     const colorHex = PLAYER_COLORS_HEX[color] ?? 0xffffff;
 
@@ -622,6 +782,7 @@ export class NeonFallGame {
     if (e.key === 'a' || e.key === 'ArrowLeft') this.keys.a = true;
     if (e.key === 'd' || e.key === 'ArrowRight') this.keys.d = true;
     if (e.key === ' ') { this.keys.space = true; e.preventDefault(); }
+    if (e.key === 'Shift') { this.keys.shift = true; e.preventDefault(); }
   };
 
   private onKeyUp = (e: KeyboardEvent) => {
@@ -630,13 +791,14 @@ export class NeonFallGame {
     if (e.key === 'a' || e.key === 'ArrowLeft') this.keys.a = false;
     if (e.key === 'd' || e.key === 'ArrowRight') this.keys.d = false;
     if (e.key === ' ') this.keys.space = false;
+    if (e.key === 'Shift') this.keys.shift = false;
   };
 
   public notifyElimination(_playerName: string): void {
     // sound is handled via updateState detecting isAlive change
   }
 
-  public setKeys(keys: Partial<{ w: boolean; a: boolean; s: boolean; d: boolean; space: boolean }>): void {
+  public setKeys(keys: Partial<{ w: boolean; a: boolean; s: boolean; d: boolean; space: boolean; shift: boolean }>): void {
     Object.assign(this.keys, keys);
   }
 
@@ -738,6 +900,20 @@ export class NeonFallGame {
       const moveDz = mesh.sphere.position.z - mesh.prevZ;
       mesh.ring.rotation.x = Math.PI / 3 + moveDz * 2;
       mesh.ring.rotation.y += delta * 2.0;
+    }
+
+    // Animate gravity wells
+    for (const [, wellMesh] of this.gravityWellMeshes) {
+      wellMesh.sphere.position.y = 1.5 + Math.sin(time * 1.2) * 0.2;
+      wellMesh.ring1.position.y = wellMesh.sphere.position.y;
+      wellMesh.ring2.position.y = wellMesh.sphere.position.y;
+      wellMesh.light.position.copy(wellMesh.sphere.position);
+      wellMesh.sphere.rotation.y += delta * 0.8;
+      wellMesh.ring1.rotation.z += delta * 1.5;
+      wellMesh.ring2.rotation.z -= delta * 1.0;
+      wellMesh.ring2.rotation.y += delta * 0.7;
+      // Pulse the light
+      wellMesh.light.intensity = 1.8 + Math.sin(time * 3.0) * 0.5;
     }
 
     this.composer.render(delta);

@@ -217,7 +217,12 @@ export class GameLobby {
     let lastTick = Date.now();
     let tileFallAccumulator = 0;
 
-    const getCurrentInterval = () => Math.max(1500, 5000 - Math.floor(this.fallCount / 4) * 250);
+    const INITIAL_FALL_INTERVAL = 5000;
+    const MIN_FALL_INTERVAL = 1500;
+    const FALLS_PER_ACCELERATION = 4;
+    const INTERVAL_DECREASE = 250;
+    const getCurrentInterval = () =>
+      Math.max(MIN_FALL_INTERVAL, INITIAL_FALL_INTERVAL - Math.floor(this.fallCount / FALLS_PER_ACCELERATION) * INTERVAL_DECREASE);
 
     this.gameInterval = setInterval(() => {
       const now = Date.now();

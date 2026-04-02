@@ -55,7 +55,8 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     if (num > 0) {
       sound.init();
       sound.playCountdown(num);
-      showCountdownNumber(String(num), num === 1 ? '#ff4444' : num === 2 ? '#ffaa00' : '#00ffff', 0.8);
+      const countdownColors: Record<number, string> = { 1: '#ff4444', 2: '#ffaa00', 3: '#00ffff' };
+      showCountdownNumber(String(num), countdownColors[num] ?? '#00ffff', 0.8);
       if (num > 1) {
         setTimeout(() => runCountdown(num - 1), 1000);
       } else {

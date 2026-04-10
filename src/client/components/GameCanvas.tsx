@@ -92,7 +92,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
           runCountdown(msg.lobbyState.countdown);
         }
       } else if (msg.type === 'player_eliminated') {
-        const notification = `${msg.playerName} fell off!`;
+        const notification = `${msg.playerName} fell through the floor!`;
         setShowElimination(notification);
         game.notifyElimination(msg.playerName);
         setTimeout(() => setShowElimination(''), 3000);
@@ -341,7 +341,8 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
             <div className="controls-title">Controls</div>
             WASD / Arrows — Move<br />
             Space — Dash<br />
-            Shift — Blast
+            Shift — Blast<br />
+            <span style={{ color: 'rgba(255,180,80,0.7)', fontSize: '0.65rem' }}>Walk on tiles to break them!</span>
           </div>
         </div>
       </div>

@@ -117,10 +117,10 @@ export class NeonFallGame {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x020208);
-    this.scene.fog = new THREE.FogExp2(0x020208, 0.015);
+    this.scene.fog = new THREE.FogExp2(0x020208, 0.005);
 
     this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 300);
-    this.camera.position.set(ARENA_SIZE * TILE_SIZE * 0.5, 32, ARENA_SIZE * TILE_SIZE * 0.5 + 26);
+    this.camera.position.set(ARENA_SIZE * TILE_SIZE * 0.5, 40, ARENA_SIZE * TILE_SIZE * 0.5 + 32);
     this.camera.lookAt(ARENA_SIZE * TILE_SIZE * 0.5, 0, ARENA_SIZE * TILE_SIZE * 0.5);
     this.cameraBasePos.copy(this.camera.position);
 
@@ -234,21 +234,21 @@ export class NeonFallGame {
       }
     }
 
-    // Hot-glow void floor — clearly visible through fallen-tile gaps
+    // Deep lava pit — clearly visible as a glowing abyss through fallen-tile gaps
     const baseGeo = new THREE.BoxGeometry(
       ARENA_SIZE * TILE_SIZE + 1,
       0.1,
       ARENA_SIZE * TILE_SIZE + 1
     );
     const baseMat = new THREE.MeshStandardMaterial({
-      color: 0x1a0000,
-      emissive: 0xff3300,
-      emissiveIntensity: 1.5,
+      color: 0x3a0800,
+      emissive: 0xff4400,
+      emissiveIntensity: 4.0,
     });
     this.baseMesh = new THREE.Mesh(baseGeo, baseMat);
     this.baseMesh.position.set(
       (ARENA_SIZE * TILE_SIZE) / 2 - TILE_SIZE / 2,
-      -0.2,
+      -3.5,
       (ARENA_SIZE * TILE_SIZE) / 2 - TILE_SIZE / 2
     );
     this.scene.add(this.baseMesh);
@@ -570,8 +570,8 @@ export class NeonFallGame {
       const targetX = myPlayer.position.x * TILE_SIZE;
       const targetZ = myPlayer.position.z * TILE_SIZE;
       this.cameraBasePos.x += (targetX - this.cameraBasePos.x) * 0.05;
-      this.cameraBasePos.z += (targetZ + 26 - this.cameraBasePos.z) * 0.05;
-      this.cameraBasePos.y = 32;
+      this.cameraBasePos.z += (targetZ + 32 - this.cameraBasePos.z) * 0.05;
+      this.cameraBasePos.y = 40;
     }
   }
 
@@ -580,12 +580,12 @@ export class NeonFallGame {
     if (this.voidMeshes.has(key)) return;
     const geo = new THREE.BoxGeometry(TILE_SIZE - 0.05, 0.1, TILE_SIZE - 0.05);
     const mat = new THREE.MeshStandardMaterial({
-      color: 0x200000,
+      color: 0x000000,
       emissive: 0xff2200,
-      emissiveIntensity: 2.0,
+      emissiveIntensity: 2.5,
     });
     const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(x * TILE_SIZE, -0.16, z * TILE_SIZE);
+    mesh.position.set(x * TILE_SIZE, -2.8, z * TILE_SIZE);
     this.scene.add(mesh);
     this.voidMeshes.set(key, mesh);
   }
@@ -603,16 +603,16 @@ export class NeonFallGame {
 
   private animateCrumblingTile(mesh: THREE.Mesh): void {
     const mat = mesh.material as THREE.MeshStandardMaterial;
-    mat.emissive.setHex(0xff4400);
-    mat.emissiveIntensity = 1.5;
-    mat.color.setHex(0x882200);
+    mat.emissive.setHex(0xff6600);
+    mat.emissiveIntensity = 3.0;
+    mat.color.setHex(0xcc2200);
 
     const origX = mesh.userData.originalX as number;
     const origZ = mesh.userData.originalZ as number;
     gsap.to(mesh.position, {
-      x: origX + (Math.random() - 0.5) * 0.12,
-      duration: 0.08,
-      repeat: 24,
+      x: origX + (Math.random() - 0.5) * 0.28,
+      duration: 0.06,
+      repeat: 28,
       yoyo: true,
       ease: 'none',
       onComplete: () => {
@@ -620,14 +620,22 @@ export class NeonFallGame {
       },
     });
     gsap.to(mesh.position, {
-      z: origZ + (Math.random() - 0.5) * 0.12,
-      duration: 0.1,
-      repeat: 20,
+      z: origZ + (Math.random() - 0.5) * 0.28,
+      duration: 0.08,
+      repeat: 22,
       yoyo: true,
       ease: 'none',
       onComplete: () => {
         mesh.position.z = origZ;
       },
+    });
+    // Brief upward "stress" bump before collapse
+    gsap.to(mesh.position, {
+      y: 0.12,
+      duration: 0.1,
+      yoyo: true,
+      repeat: 1,
+      ease: 'power1.out',
     });
   }
 
@@ -936,7 +944,7 @@ export class NeonFallGame {
         const tileState = this.lobbyState.tiles[x]?.[z];
         if (tileState?.state === 'crumbling') {
           const mat = mesh.material as THREE.MeshStandardMaterial;
-          mat.emissiveIntensity = 1.0 + Math.sin(time * 20) * 0.8;
+          mat.emissiveIntensity = 2.5 + Math.sin(time * 30) * 1.5;
         } else {
           const mat = mesh.material as THREE.MeshStandardMaterial;
           const phase = (x + z) * 0.3 + time * 0.5;
@@ -991,10 +999,10 @@ export class NeonFallGame {
       mat.emissiveIntensity = 1.8 + Math.sin(time * 3.5 + vm.position.x * 0.7) * 0.6;
     }
 
-    // Pulse hot base floor
+    // Pulse hot base floor (lava)
     if (this.baseMesh) {
       const mat = this.baseMesh.material as THREE.MeshStandardMaterial;
-      mat.emissiveIntensity = 1.2 + Math.sin(time * 1.5) * 0.3;
+      mat.emissiveIntensity = 3.5 + Math.sin(time * 1.5) * 0.5;
     }
 
     this.composer.render(delta);

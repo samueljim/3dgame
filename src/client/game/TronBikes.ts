@@ -50,8 +50,8 @@ interface BikeMesh {
 
 /** Shortest angular distance from `a` to `b` (both in radians). */
 function shortestAngleDelta(a: number, b: number): number {
-  const raw = ((b - a + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-  return raw;
+  const angleDelta = ((b - a + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+  return angleDelta;
 }
 
 export class TronBikesGame {

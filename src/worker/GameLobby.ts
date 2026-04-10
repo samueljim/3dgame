@@ -9,7 +9,7 @@ import {
 } from '../shared/types';
 
 // Opposite directions — used to prevent immediate reversals
-const OPPOSITE: Record<Direction, Direction> = { N: 'S', S: 'N', E: 'W', W: 'E' };
+const DIRECTION_OPPOSITES: Record<Direction, Direction> = { N: 'S', S: 'N', E: 'W', W: 'E' };
 
 // Start positions & facing directions for up to 8 players
 const START_CONFIGS: Array<{ x: number; z: number; dir: Direction }> = [
@@ -347,7 +347,7 @@ export class GameLobby {
     currentDir: Direction,
   ): Direction {
     // Consume buffered turn first (set by handleInput immediately on key press)
-    if (session.pendingDirection !== null && session.pendingDirection !== OPPOSITE[currentDir]) {
+    if (session.pendingDirection !== null && session.pendingDirection !== DIRECTION_OPPOSITES[currentDir]) {
       const dir = session.pendingDirection;
       session.pendingDirection = null;
       return dir;
@@ -362,7 +362,7 @@ export class GameLobby {
       [session.keys.s, 'S'],
     ];
     for (const [held, dir] of candidates) {
-      if (held && dir !== OPPOSITE[currentDir]) return dir;
+      if (held && dir !== DIRECTION_OPPOSITES[currentDir]) return dir;
     }
     return currentDir;
   }
@@ -451,7 +451,7 @@ export class GameLobby {
         [keys.s, 'S'],
       ];
       for (const [held, dir] of candidates) {
-        if (held && dir !== player.direction && dir !== OPPOSITE[player.direction]) {
+        if (held && dir !== player.direction && dir !== DIRECTION_OPPOSITES[player.direction]) {
           // Only overwrite the buffer if this is a genuinely new turn request
           session.pendingDirection = dir;
           break;

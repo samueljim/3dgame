@@ -68,8 +68,9 @@ export const MAX_PLAYERS = 8;
 
 /**
  * Speed schedule: bikes advance once every SPEED_MOVE_TICKS[level] ticks.
- * Level 0 = slowest (start), level 3 = fastest (endgame).
- * At TICK_RATE = 50ms: level0 = 200ms/move, level1 = 150ms, level2 = 100ms, level3 = 50ms.
+ * Level 0 = SLOW (start), level 1 = NORMAL, level 2 = FAST, level 3 = MAX speed.
+ * At TICK_RATE = 50ms: SLOW=200ms/move, NORMAL=150ms, FAST=100ms, MAX=50ms.
+ * Index:                   0             1              2            3
  */
 export const SPEED_MOVE_TICKS = [4, 3, 2, 1] as const;
 

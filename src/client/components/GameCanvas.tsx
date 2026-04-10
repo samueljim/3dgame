@@ -297,10 +297,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
         >
           <div className="joystick-thumb" ref={joystickThumbRef} />
         </div>
-        <div className="mobile-action-btns" style={{ visibility: 'hidden' }}>
-          {/* placeholder to keep layout consistent */}
-          <button className="dash-btn">—</button>
-        </div>
+        <div className="mobile-action-btns" style={{ minWidth: '70px' }} />
       </div>
 
       {showElimination && (

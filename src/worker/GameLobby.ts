@@ -25,7 +25,7 @@ const START_CONFIGS: Array<{ x: number; z: number; dir: Direction }> = [
 interface PlayerSession {
   ws: WebSocket;
   playerId: string;
-  colorIndex: number; // stable index into PLAYER_COLORS (1-based in trail array)
+  colorIndex: number; // 0-based index into PLAYER_COLORS; stored as colorIndex+1 in the trail array
   keys: { w: boolean; a: boolean; s: boolean; d: boolean; space: boolean; shift: boolean };
 }
 
@@ -226,8 +226,9 @@ export class GameLobby {
 
       // Check win condition
       const alivePlayers = this.lobbyState.players.filter(p => p.isAlive);
-      // Only trigger end when move happened OR right after a move eliminates someone;
-      // we always check after advance inside advanceBikes, but also check here for safety
+      // Safety check: if advanceBikes() somehow left ≤1 alive player without ending the round
+      // (e.g. via disconnect), catch it here.  moveTickCounter === 0 ensures we only act
+      // immediately after a move tick, keeping game state consistent.
       if (alivePlayers.length <= 1 && this.moveTickCounter === 0) {
         this.endRound(alivePlayers[0] ?? null);
         return;
@@ -326,7 +327,8 @@ export class GameLobby {
     keys: PlayerSession['keys'],
     currentDir: Direction,
   ): Direction {
-    // Priority: W (N) → D (E) → A (W) → S (S)
+    // Key priority (highest first): W→North, D→East, A→West, S→South.
+    // When multiple keys are held the first non-reversing direction wins.
     const candidates: [boolean, Direction][] = [
       [keys.w, 'N'],
       [keys.d, 'E'],

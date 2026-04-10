@@ -18,6 +18,16 @@ const PLAYER_COLORS_HEX: Record<string, number> = {
 
 const ARENA_HALF = (ARENA_SIZE * CELL_SIZE) / 2;
 
+/** Milliseconds between input messages sent to the server (~25 per second). */
+const INPUT_THROTTLE_MS = 40;
+
+/**
+ * Frame-rate independent position interpolation.
+ * Formula: alpha = 1 - BASE^(dt * TARGET_FPS)  where BASE=0.05, TARGET_FPS=60.
+ */
+const INTERP_BASE = 0.05;
+const INTERP_TARGET_FPS = 60;
+
 interface BikeMesh {
   body: THREE.Mesh;
   light: THREE.PointLight;
@@ -403,7 +413,7 @@ export class TronBikesGame {
 
   private sendInput(): void {
     const now = performance.now();
-    if (now - this.lastInputSent < 40) return;
+    if (now - this.lastInputSent < INPUT_THROTTLE_MS) return;
     this.lastInputSent = now;
     if (this.ws.readyState === WebSocket.OPEN) {
       const msg: ClientMessage = { type: 'input', keys: { ...this.keys } };
@@ -427,7 +437,7 @@ export class TronBikesGame {
     // Smoothly interpolate bike positions
     for (const mesh of this.bikeMeshes.values()) {
       if (!mesh.alive) continue;
-      const alpha = 1 - Math.pow(0.05, dt * 60);
+      const alpha = 1 - Math.pow(INTERP_BASE, dt * INTERP_TARGET_FPS);
       mesh.body.position.x += (mesh.targetX - mesh.body.position.x) * alpha;
       mesh.body.position.z += (mesh.targetZ - mesh.body.position.z) * alpha;
       mesh.light.position.x = mesh.body.position.x;

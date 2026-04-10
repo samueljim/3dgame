@@ -3,7 +3,7 @@ import { gsap } from 'gsap';
 import { TronBikesGame } from '../game/TronBikes';
 import { SoundManager } from '../game/SoundManager';
 import type { LobbyState, ServerMessage } from '@shared/types';
-import { MAX_ROUNDS } from '@shared/types';
+import { MAX_ROUNDS, SPEED_LEVEL_THRESHOLDS } from '@shared/types';
 import musicUrl from './music.mp3';
 
 interface GameCanvasProps {
@@ -168,6 +168,15 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
   const minutes = Math.floor(currentState.gameTime / 60);
   const seconds = Math.floor(currentState.gameTime % 60);
 
+  const speedLevel = currentState.speedLevel ?? 0;
+  const speedLabels = ['SLOW', 'NORMAL', 'FAST', '⚡ MAX'];
+  const speedColors = ['#44ffee', '#ffee44', '#ff9944', '#ff3333'];
+  // seconds until next speed-up (null if already at max)
+  const nextSpeedThreshold = SPEED_LEVEL_THRESHOLDS[speedLevel + 1] ?? null;
+  const secUntilSpeedup = nextSpeedThreshold !== null
+    ? Math.max(0, Math.ceil(nextSpeedThreshold - currentState.gameTime))
+    : null;
+
   const colorDotClass: Record<string, string> = {
     red: 'hud-dot-red', green: 'hud-dot-green', yellow: 'hud-dot-yellow',
     purple: 'hud-dot-purple', blue: 'hud-dot-blue', cyan: 'hud-dot-cyan',
@@ -237,6 +246,26 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
 
         <div className="hud-timer">
           <div className="hud-time">{String(minutes).padStart(2, '0')}:{String(seconds).padStart(2, '0')}</div>
+          {/* Speed level badge */}
+          <div style={{
+            marginTop: '0.35rem',
+            padding: '0.15rem 0.45rem',
+            borderRadius: '4px',
+            background: 'rgba(0,0,0,0.5)',
+            border: `1px solid ${speedColors[speedLevel]}`,
+            color: speedColors[speedLevel],
+            fontSize: '0.72rem',
+            fontWeight: 700,
+            letterSpacing: '0.08em',
+            textAlign: 'center',
+          }}>
+            {speedLabels[speedLevel]}
+            {secUntilSpeedup !== null && secUntilSpeedup > 0 && (
+              <span style={{ opacity: 0.65, fontWeight: 400, marginLeft: '0.3rem' }}>
+                +{secUntilSpeedup}s
+              </span>
+            )}
+          </div>
           <div style={{ fontSize: '0.7rem', marginTop: '0.3rem', color: 'rgba(200,200,255,0.4)' }}>
             {alivePlayers.length} alive
           </div>

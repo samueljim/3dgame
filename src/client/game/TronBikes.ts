@@ -2,18 +2,18 @@ import * as THREE from 'three';
 import { EffectComposer, RenderPass, EffectPass, BloomEffect, VignetteEffect } from 'postprocessing';
 import { gsap } from 'gsap';
 import type { LobbyState, Player, ClientMessage, Direction } from '@shared/types';
-import { ARENA_SIZE, CELL_SIZE, PLAYER_COLORS } from '@shared/types';
+import { ARENA_SIZE, CELL_SIZE, PLAYER_COLORS, SPEED_LEVEL_THRESHOLDS } from '@shared/types';
 import type { SoundManager } from './SoundManager';
 
 const PLAYER_COLORS_HEX: Record<string, number> = {
-  red:    0xff3333,
-  green:  0x33ff44,
-  yellow: 0xffee33,
-  purple: 0xaa33ff,
-  blue:   0x3377ff,
-  cyan:   0x33ffee,
-  orange: 0xff8833,
-  pink:   0xff33aa,
+  red:    0xff2222,
+  green:  0x22ff44,
+  yellow: 0xffee22,
+  purple: 0xbb22ff,
+  blue:   0x2266ff,
+  cyan:   0x22ffee,
+  orange: 0xff8822,
+  pink:   0xff22aa,
 };
 
 const ARENA_HALF = (ARENA_SIZE * CELL_SIZE) / 2;
@@ -28,12 +28,30 @@ const INPUT_THROTTLE_MS = 40;
 const INTERP_BASE = 0.05;
 const INTERP_TARGET_FPS = 60;
 
+/** Rotation interpolation — faster than position for snappy feel. */
+const ROT_INTERP_BASE = 0.008;
+
+/** Map direction → Y rotation (radians) for bike mesh. */
+const DIR_TO_ROT: Record<Direction, number> = {
+  N: 0,
+  S: Math.PI,
+  E: -Math.PI / 2,
+  W: Math.PI / 2,
+};
+
 interface BikeMesh {
   body: THREE.Mesh;
   light: THREE.PointLight;
   targetX: number;
   targetZ: number;
+  targetRotY: number;
   alive: boolean;
+}
+
+/** Shortest angular distance from `a` to `b` (both in radians). */
+function shortestAngleDelta(a: number, b: number): number {
+  const raw = ((b - a + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+  return raw;
 }
 
 export class TronBikesGame {
@@ -53,6 +71,10 @@ export class TronBikesGame {
   // Trail mesh grid — one slot per cell
   private trailMeshes: (THREE.Mesh | null)[][] = [];
   private prevTrail: number[][] = [];
+
+  // Shared geometry and per-colour materials for trail segments (avoids geometry churn)
+  private trailGeo!: THREE.BoxGeometry;
+  private trailMats: THREE.MeshStandardMaterial[] = [];
 
   // Input state
   private keys = { w: false, a: false, s: false, d: false, space: false, shift: false };
@@ -106,9 +128,24 @@ export class TronBikesGame {
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.composer.addPass(new EffectPass(
       this.camera,
-      new BloomEffect({ intensity: 2.8, luminanceThreshold: 0.08, radius: 0.9 }),
-      new VignetteEffect({ darkness: 0.5 }),
+      new BloomEffect({ intensity: 3.2, luminanceThreshold: 0.06, radius: 0.95 }),
+      new VignetteEffect({ darkness: 0.55 }),
     ));
+
+    // Pre-build shared trail geometry and one material per player colour
+    this.trailGeo = new THREE.BoxGeometry(CELL_SIZE * 0.82, 1.2, CELL_SIZE * 0.82);
+    for (const colorName of PLAYER_COLORS) {
+      const colorHex = PLAYER_COLORS_HEX[colorName] ?? 0xffffff;
+      this.trailMats.push(new THREE.MeshStandardMaterial({
+        color: colorHex,
+        emissive: colorHex,
+        emissiveIntensity: 2.0,
+        roughness: 0.08,
+        metalness: 0.85,
+        transparent: true,
+        opacity: 0.92,
+      }));
+    }
 
     // Init trail tracking arrays
     for (let x = 0; x < ARENA_SIZE; x++) {
@@ -127,29 +164,39 @@ export class TronBikesGame {
 
   private setupScene(): void {
     // Ambient
-    this.scene.add(new THREE.AmbientLight(0x020218, 0.6));
+    this.scene.add(new THREE.AmbientLight(0x020220, 0.5));
 
-    // Directional
-    const dir = new THREE.DirectionalLight(0x334488, 0.5);
+    // Directional (cool blue tint)
+    const dir = new THREE.DirectionalLight(0x4466bb, 0.45);
     dir.position.set(ARENA_HALF, 60, ARENA_HALF + 40);
     this.scene.add(dir);
+
+    // Subtle under-lighting to make trail walls readable from top-down
+    const under = new THREE.DirectionalLight(0x002244, 0.3);
+    under.position.set(ARENA_HALF, -20, ARENA_HALF);
+    this.scene.add(under);
 
     // Floor
     const W = ARENA_SIZE * CELL_SIZE;
     const floorGeo = new THREE.PlaneGeometry(W + 4, W + 4);
-    const floorMat = new THREE.MeshStandardMaterial({ color: 0x000d1a, roughness: 0.95 });
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0x000c18, roughness: 0.98 });
     const floor = new THREE.Mesh(floorGeo, floorMat);
     floor.rotation.x = -Math.PI / 2;
     floor.position.set(ARENA_HALF, -0.02, ARENA_HALF);
     this.scene.add(floor);
 
-    // Grid lines
-    const grid = new THREE.GridHelper(W, ARENA_SIZE, 0x003355, 0x001122);
+    // Grid lines — slightly brighter for visibility
+    const grid = new THREE.GridHelper(W, ARENA_SIZE, 0x004466, 0x001c2e);
     grid.position.set(ARENA_HALF, 0.02, ARENA_HALF);
     this.scene.add(grid);
 
     // Arena border glow walls
     this.buildBorderWalls();
+
+    // Subtle arena floor glow at centre
+    const glowLight = new THREE.PointLight(0x0033aa, 1.2, W * 0.8);
+    glowLight.position.set(ARENA_HALF, -1, ARENA_HALF);
+    this.scene.add(glowLight);
 
     // Stars
     const starCount = 700;
@@ -163,20 +210,20 @@ export class TronBikesGame {
     starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
     this.scene.add(new THREE.Points(
       starGeo,
-      new THREE.PointsMaterial({ color: 0xffffff, size: 0.25, sizeAttenuation: true }),
+      new THREE.PointsMaterial({ color: 0xffffff, size: 0.22, sizeAttenuation: true }),
     ));
   }
 
   private buildBorderWalls(): void {
     const W = ARENA_SIZE * CELL_SIZE;
-    const H = 1.8;
-    const T = 0.25;
+    const H = 2.0;
+    const T = 0.3;
     const mat = new THREE.MeshStandardMaterial({
       color: 0x001833,
-      emissive: 0x0055cc,
-      emissiveIntensity: 1.8,
-      roughness: 0.15,
-      metalness: 0.9,
+      emissive: 0x0066ff,
+      emissiveIntensity: 2.2,
+      roughness: 0.1,
+      metalness: 0.95,
     });
     // N, S, W, E walls
     const panels = [
@@ -204,40 +251,33 @@ export class TronBikesGame {
     const colorHex = PLAYER_COLORS_HEX[player.color] ?? 0xffffff;
 
     // Bike body — elongated box
-    const bodyGeo = new THREE.BoxGeometry(0.55 * CELL_SIZE, 0.22 * CELL_SIZE, 0.85 * CELL_SIZE);
+    const bodyGeo = new THREE.BoxGeometry(0.52 * CELL_SIZE, 0.24 * CELL_SIZE, 0.9 * CELL_SIZE);
     const bodyMat = new THREE.MeshStandardMaterial({
       color: colorHex,
       emissive: colorHex,
-      emissiveIntensity: 0.9,
-      roughness: 0.18,
-      metalness: 0.65,
+      emissiveIntensity: 1.1,
+      roughness: 0.15,
+      metalness: 0.7,
     });
     const body = new THREE.Mesh(bodyGeo, bodyMat);
     const wx = player.position.x * CELL_SIZE;
     const wz = player.position.z * CELL_SIZE;
     body.position.set(wx, 0.3, wz);
-    this.orientBike(body, player.direction);
+    const targetRotY = DIR_TO_ROT[player.direction] ?? 0;
+    body.rotation.y = targetRotY;
     this.scene.add(body);
 
-    // Point light
-    const light = new THREE.PointLight(colorHex, 2.5, CELL_SIZE * 4);
+    // Point light — wide enough to glow on nearby trail
+    const light = new THREE.PointLight(colorHex, 3.0, CELL_SIZE * 5.5);
     light.position.set(wx, 0.6, wz);
     this.scene.add(light);
 
     this.bikeMeshes.set(player.id, {
       body, light,
       targetX: wx, targetZ: wz,
+      targetRotY,
       alive: true,
     });
-  }
-
-  private orientBike(body: THREE.Mesh, dir: Direction): void {
-    switch (dir) {
-      case 'N': body.rotation.y = 0;              break;
-      case 'S': body.rotation.y = Math.PI;        break;
-      case 'E': body.rotation.y = -Math.PI / 2;  break;
-      case 'W': body.rotation.y = Math.PI / 2;   break;
-    }
   }
 
   // ─── State Update ────────────────────────────────────────────────────────────
@@ -261,14 +301,15 @@ export class TronBikesGame {
       if (prev?.isAlive && !player.isAlive) {
         this.playCrashEffect(mesh, player.color);
         this.soundManager.playExplosion();
-        this.cameraShake.intensity = Math.max(this.cameraShake.intensity, 0.8);
+        this.cameraShake.intensity = Math.max(this.cameraShake.intensity, 0.9);
       }
 
       // Respawn at new round start
       if (player.isAlive && !mesh.alive) {
         mesh.alive = true;
         mesh.body.visible = true;
-        mesh.light.intensity = 2.5;
+        (mesh.body.material as THREE.MeshStandardMaterial).emissiveIntensity = 1.1;
+        mesh.light.intensity = 3.0;
       }
 
       if (!player.isAlive) continue;
@@ -277,7 +318,7 @@ export class TronBikesGame {
       const wz = player.position.z * CELL_SIZE;
       mesh.targetX = wx;
       mesh.targetZ = wz;
-      this.orientBike(mesh.body, player.direction);
+      mesh.targetRotY = DIR_TO_ROT[player.direction] ?? mesh.targetRotY;
     }
 
     // Update trail meshes (only changed cells)
@@ -290,42 +331,40 @@ export class TronBikesGame {
 
     // Flash then hide
     gsap.to((mesh.body.material as THREE.MeshStandardMaterial), {
-      emissiveIntensity: 4,
-      duration: 0.08,
+      emissiveIntensity: 5,
+      duration: 0.07,
       onComplete: () => {
         gsap.to((mesh.body.material as THREE.MeshStandardMaterial), {
           emissiveIntensity: 0,
-          duration: 0.4,
+          duration: 0.35,
           onComplete: () => { mesh.body.visible = false; },
         });
       },
     });
-    gsap.to(mesh.light, { intensity: 0, duration: 0.4 });
+    gsap.to(mesh.light, { intensity: 0, duration: 0.35 });
 
-    // Spawn short-lived debris particles
-    const count = 12;
+    // Debris ring
+    const count = 16;
     for (let i = 0; i < count; i++) {
-      const geo = new THREE.BoxGeometry(0.12, 0.12, 0.12);
+      const geo = new THREE.BoxGeometry(0.14, 0.14, 0.14);
       const mat = new THREE.MeshStandardMaterial({
-        color: colorHex, emissive: colorHex, emissiveIntensity: 2.0,
+        color: colorHex, emissive: colorHex, emissiveIntensity: 2.5,
       });
       const debris = new THREE.Mesh(geo, mat);
       debris.position.copy(mesh.body.position);
       this.scene.add(debris);
       const angle = (i / count) * Math.PI * 2;
-      const speed = 0.8 + Math.random() * 1.2;
-      const vx = Math.cos(angle) * speed;
-      const vz = Math.sin(angle) * speed;
+      const speed = 1.0 + Math.random() * 1.5;
       gsap.to(debris.position, {
-        x: debris.position.x + vx * 2,
-        y: debris.position.y + Math.random() * 1.2 + 0.3,
-        z: debris.position.z + vz * 2,
-        duration: 0.6,
+        x: debris.position.x + Math.cos(angle) * speed * 2,
+        y: debris.position.y + Math.random() * 1.5 + 0.2,
+        z: debris.position.z + Math.sin(angle) * speed * 2,
+        duration: 0.55,
         ease: 'power2.out',
       });
       gsap.to(debris.scale, {
         x: 0.01, y: 0.01, z: 0.01,
-        duration: 0.6,
+        duration: 0.55,
         onComplete: () => {
           this.scene.remove(debris);
           geo.dispose();
@@ -349,31 +388,21 @@ export class TronBikesGame {
         if (old) { this.scene.remove(old); this.trailMeshes[x][z] = null; }
 
         if (cur !== 0) {
-          const colorName = PLAYER_COLORS[cur - 1];
-          const colorHex  = PLAYER_COLORS_HEX[colorName] ?? 0xffffff;
-          const m = this.createTrailSegment(x, z, colorHex);
-          this.scene.add(m);
-          this.trailMeshes[x][z] = m;
+          const colorIdx = cur - 1; // 0-based
+          const mat = this.trailMats[colorIdx];
+          if (mat) {
+            const m = new THREE.Mesh(this.trailGeo, mat);
+            m.position.set(x * CELL_SIZE, 0.6, z * CELL_SIZE);
+            // Snappy pop-in animation
+            m.scale.set(0.01, 0.01, 0.01);
+            this.scene.add(m);
+            gsap.to(m.scale, { x: 1, y: 1, z: 1, duration: 0.14, ease: 'back.out(2)' });
+            this.trailMeshes[x][z] = m;
+          }
         }
         this.prevTrail[x][z] = cur;
       }
     }
-  }
-
-  private createTrailSegment(x: number, z: number, colorHex: number): THREE.Mesh {
-    const geo = new THREE.BoxGeometry(CELL_SIZE * 0.78, 1.1, CELL_SIZE * 0.78);
-    const mat = new THREE.MeshStandardMaterial({
-      color: colorHex,
-      emissive: colorHex,
-      emissiveIntensity: 1.6,
-      roughness: 0.1,
-      metalness: 0.8,
-      transparent: true,
-      opacity: 0.88,
-    });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(x * CELL_SIZE, 0.55, z * CELL_SIZE);
-    return mesh;
   }
 
   public notifyElimination(_playerName: string): void {
@@ -434,15 +463,21 @@ export class TronBikesGame {
     this.animFrameId = requestAnimationFrame(this.animate);
     const dt = this.clock.getDelta();
 
-    // Smoothly interpolate bike positions
+    const posAlpha = 1 - Math.pow(INTERP_BASE, dt * INTERP_TARGET_FPS);
+    const rotAlpha = 1 - Math.pow(ROT_INTERP_BASE, dt * INTERP_TARGET_FPS);
+
+    // Smoothly interpolate bike positions and rotations
     for (const mesh of this.bikeMeshes.values()) {
       if (!mesh.alive) continue;
-      const alpha = 1 - Math.pow(INTERP_BASE, dt * INTERP_TARGET_FPS);
-      mesh.body.position.x += (mesh.targetX - mesh.body.position.x) * alpha;
-      mesh.body.position.z += (mesh.targetZ - mesh.body.position.z) * alpha;
+      mesh.body.position.x += (mesh.targetX - mesh.body.position.x) * posAlpha;
+      mesh.body.position.z += (mesh.targetZ - mesh.body.position.z) * posAlpha;
       mesh.light.position.x = mesh.body.position.x;
       mesh.light.position.z = mesh.body.position.z;
       mesh.light.position.y = 0.7;
+
+      // Smooth rotation — take the shortest angular path to avoid spinning the wrong way
+      const delta = shortestAngleDelta(mesh.body.rotation.y, mesh.targetRotY);
+      mesh.body.rotation.y += delta * rotAlpha;
     }
 
     // Camera shake
@@ -479,6 +514,8 @@ export class TronBikesGame {
         if (m) this.scene.remove(m);
       }
     }
+    this.trailGeo.dispose();
+    for (const mat of this.trailMats) mat.dispose();
     this.renderer.dispose();
   }
 }

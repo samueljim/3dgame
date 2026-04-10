@@ -32,6 +32,7 @@ export interface LobbyState {
   gameTime: number;      // seconds elapsed
   winner: string | null; // player id (final match winner)
   countdown?: number;
+  speedLevel: number;    // 0–3, increases over time; drives bike move frequency
   // multi-round fields
   currentRound: number;
   maxRounds: number;
@@ -62,6 +63,15 @@ export type ServerMessage =
 export const ARENA_SIZE = 40;          // grid cells per side
 export const CELL_SIZE = 1.5;          // world units per grid cell
 export const TICK_RATE = 50;           // ms per game-loop tick
-export const MOVE_EVERY_N_TICKS = 3;   // bikes advance once every N ticks (~150 ms / move)
 export const MAX_ROUNDS = 5;           // first to win ceil(MAX_ROUNDS/2) rounds wins the match
 export const MAX_PLAYERS = 8;
+
+/**
+ * Speed schedule: bikes advance once every SPEED_MOVE_TICKS[level] ticks.
+ * Level 0 = slowest (start), level 3 = fastest (endgame).
+ * At TICK_RATE = 50ms: level0 = 200ms/move, level1 = 150ms, level2 = 100ms, level3 = 50ms.
+ */
+export const SPEED_MOVE_TICKS = [4, 3, 2, 1] as const;
+
+/** Game-time thresholds (seconds) at which the speed advances to the next level. */
+export const SPEED_LEVEL_THRESHOLDS = [0, 20, 45, 75] as const;

@@ -275,9 +275,9 @@ export class NeonFallGame {
   private createTileMesh(geo: THREE.BoxGeometry, x: number, z: number): THREE.Mesh {
     const isEven = (x + z) % 2 === 0;
     const mat = new THREE.MeshStandardMaterial({
-      color: isEven ? 0x002244 : 0x001833,
-      emissive: isEven ? 0x001122 : 0x000d1a,
-      emissiveIntensity: 0.5,
+      color: isEven ? 0x00cfff : 0x0099ee,
+      emissive: isEven ? 0x0088cc : 0x005599,
+      emissiveIntensity: 1.0,
       roughness: 0.3,
       metalness: 0.8,
     });
@@ -446,9 +446,9 @@ export class NeonFallGame {
               // Was crumbling — reset the material and transform back to normal
               const isEven = (x + z) % 2 === 0;
               const mat = existingMesh.material as THREE.MeshStandardMaterial;
-              mat.color.setHex(isEven ? 0x002244 : 0x001833);
-              mat.emissive.setHex(isEven ? 0x001122 : 0x000d1a);
-              mat.emissiveIntensity = 0.5;
+              mat.color.setHex(isEven ? 0x00cfff : 0x0099ee);
+              mat.emissive.setHex(isEven ? 0x0088cc : 0x005599);
+              mat.emissiveIntensity = 1.0;
               mat.opacity = 1;
               mat.transparent = false;
               existingMesh.position.y = 0;
@@ -948,7 +948,7 @@ export class NeonFallGame {
         } else {
           const mat = mesh.material as THREE.MeshStandardMaterial;
           const phase = (x + z) * 0.3 + time * 0.5;
-          mat.emissiveIntensity = 0.3 + Math.sin(phase) * 0.15;
+          mat.emissiveIntensity = 0.9 + Math.sin(phase) * 0.2;
         }
       }
     }

@@ -539,14 +539,17 @@ export class GameLobby {
 
       // Spleef: tile under the player begins crumbling (3-second grace period at round start)
       if (this.lobbyState.gameTime >= 3.0) {
-        const tx = player.position.x;
-        const tz = player.position.z;
+        // Use Math.floor to guarantee integer tile indices (player.position is already Math.round'd
+        // but the type is number; capturing as const ensures the closure references the correct tile)
+        const tx = Math.floor(player.position.x);
+        const tz = Math.floor(player.position.z);
         if (
           tx >= 0 && tx < ARENA_SIZE &&
           tz >= 0 && tz < ARENA_SIZE &&
           this.lobbyState.tiles[tx][tz].state === 'solid'
         ) {
           this.lobbyState.tiles[tx][tz] = { x: tx, z: tz, state: 'crumbling' };
+          // tx and tz are const block-scoped bindings — the closure captures their immutable values
           setTimeout(() => {
             if (this.lobbyState.tiles[tx][tz].state === 'crumbling') {
               this.lobbyState.tiles[tx][tz] = { x: tx, z: tz, state: 'fallen' };

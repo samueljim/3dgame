@@ -4,7 +4,7 @@ import type {
 } from '../shared/types';
 import {
   PLAYER_COLORS, ARENA_SIZE, PLAYER_SPEED, DASH_FORCE,
-  TICK_RATE, TILES_PER_FALL, TILE_CRUMBLE_WARNING, DASH_COOLDOWN_MS,
+  TICK_RATE, TILES_PER_FALL, TILE_CRUMBLE_WARNING, TILE_PLAYER_CRUMBLE_DELAY, DASH_COOLDOWN_MS,
   MAX_ROUNDS, MAX_PLAYERS, BLAST_COOLDOWN_MS, BLAST_FORCE, BLAST_RADIUS,
   GRAVITY_WELL_PULL, GRAVITY_WELL_INFLUENCE_RADIUS, WALL_CELLS
 } from '../shared/types';
@@ -143,8 +143,8 @@ export class GameLobby {
     const color: PlayerColor = PLAYER_COLORS[colorIndex];
 
     const startPositions = [
-      { x: 1, z: 1 }, { x: 14, z: 1 }, { x: 14, z: 14 }, { x: 1, z: 14 },
-      { x: 7, z: 1 }, { x: 14, z: 7 }, { x: 7, z: 14 }, { x: 1, z: 7 },
+      { x: 1, z: 1 }, { x: 18, z: 1 }, { x: 18, z: 18 }, { x: 1, z: 18 },
+      { x: 9, z: 1 }, { x: 18, z: 9 }, { x: 9, z: 18 }, { x: 1, z: 9 },
     ];
     const startPos = startPositions[colorIndex];
 
@@ -213,8 +213,8 @@ export class GameLobby {
 
     // Reset player positions and state
     const startPositions = [
-      { x: 1, z: 1 }, { x: 14, z: 1 }, { x: 14, z: 14 }, { x: 1, z: 14 },
-      { x: 7, z: 1 }, { x: 14, z: 7 }, { x: 7, z: 14 }, { x: 1, z: 7 },
+      { x: 1, z: 1 }, { x: 18, z: 1 }, { x: 18, z: 18 }, { x: 1, z: 18 },
+      { x: 9, z: 1 }, { x: 18, z: 9 }, { x: 9, z: 18 }, { x: 1, z: 9 },
     ];
     this.lobbyState.players.forEach((p, i) => {
       p.isAlive = true;
@@ -232,11 +232,8 @@ export class GameLobby {
       }
     });
 
-    // Initialise gravity wells at fixed positions (left-centre and right-centre of 16×16 arena)
-    this.lobbyState.gravityWells = [
-      { id: 'well-0', position: { x: 4.0, z: 8.0 }, velocity: { x: 0, z: 0 }, radius: 0.6 },
-      { id: 'well-1', position: { x: 12.0, z: 8.0 }, velocity: { x: 0, z: 0 }, radius: 0.6 },
-    ];
+    // Spleef: no gravity wells — open flat floor
+    this.lobbyState.gravityWells = [];
 
     // Countdown: 3 -> 2 -> 1 -> GO
     for (const t of this.countdownTimeouts) clearTimeout(t);
@@ -268,8 +265,8 @@ export class GameLobby {
     let lastTick = Date.now();
     let tileFallAccumulator = 0;
 
-    const INITIAL_FALL_INTERVAL = 7000;
-    const MIN_FALL_INTERVAL = 2000;
+    const INITIAL_FALL_INTERVAL = 9000;
+    const MIN_FALL_INTERVAL = 3000;
     const FALLS_PER_ACCELERATION = 4;
     const INTERVAL_DECREASE = 200;
     const getCurrentInterval = () =>
@@ -380,8 +377,8 @@ export class GameLobby {
     this.fallCount = 0;
 
     const startPositions = [
-      { x: 1, z: 1 }, { x: 14, z: 1 }, { x: 14, z: 14 }, { x: 1, z: 14 },
-      { x: 7, z: 1 }, { x: 14, z: 7 }, { x: 7, z: 14 }, { x: 1, z: 7 },
+      { x: 1, z: 1 }, { x: 18, z: 1 }, { x: 18, z: 18 }, { x: 1, z: 18 },
+      { x: 9, z: 1 }, { x: 18, z: 9 }, { x: 9, z: 18 }, { x: 1, z: 9 },
     ];
     this.lobbyState.players.forEach((p, i) => {
       p.isAlive = true;
@@ -498,7 +495,7 @@ export class GameLobby {
       session.velocity.z *= 0.85;
 
       // Clamp velocity (higher cap during dash for more satisfying pushes)
-      const maxVel = session.isDashing ? 0.7 : 0.5;
+      const maxVel = session.isDashing ? 0.9 : 0.65;
       session.velocity.x = Math.max(-maxVel, Math.min(maxVel, session.velocity.x));
       session.velocity.z = Math.max(-maxVel, Math.min(maxVel, session.velocity.z));
 
@@ -540,6 +537,27 @@ export class GameLobby {
       player.dashCooldown = Math.max(0, session.dashCooldown);
       player.blastCooldown = Math.max(0, session.blastCooldown);
 
+      // Spleef: tile under the player begins crumbling (3-second grace period at round start)
+      if (this.lobbyState.gameTime >= 3.0) {
+        // Use Math.floor to guarantee integer tile indices (player.position is already Math.round'd
+        // but the type is number; capturing as const ensures the closure references the correct tile)
+        const tx = Math.floor(player.position.x);
+        const tz = Math.floor(player.position.z);
+        if (
+          tx >= 0 && tx < ARENA_SIZE &&
+          tz >= 0 && tz < ARENA_SIZE &&
+          this.lobbyState.tiles[tx][tz].state === 'solid'
+        ) {
+          this.lobbyState.tiles[tx][tz] = { x: tx, z: tz, state: 'crumbling' };
+          // tx and tz are const block-scoped bindings — the closure captures their immutable values
+          setTimeout(() => {
+            if (this.lobbyState.tiles[tx][tz].state === 'crumbling') {
+              this.lobbyState.tiles[tx][tz] = { x: tx, z: tz, state: 'fallen' };
+            }
+          }, TILE_PLAYER_CRUMBLE_DELAY);
+        }
+      }
+
       // Check collision with other players
       for (const [otherId, otherSession] of this.sessions) {
         if (otherId === playerId) continue;
@@ -550,10 +568,10 @@ export class GameLobby {
         const dz = session.worldPos.z - otherSession.worldPos.z;
         const dist = Math.sqrt(dx * dx + dz * dz);
 
-        if (dist < 0.8 && dist > 0.001) {
+        if (dist < 1.0 && dist > 0.001) {
           const nx = dx / dist;
           const nz = dz / dist;
-          const overlap = 0.8 - dist;
+          const overlap = 1.0 - dist;
 
           session.worldPos.x += nx * overlap * 0.5;
           session.worldPos.z += nz * overlap * 0.5;

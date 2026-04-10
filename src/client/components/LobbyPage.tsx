@@ -179,16 +179,15 @@ export default function LobbyPage({
             <details className="rules-section">
               <summary className="rules-summary">📖 How to Play</summary>
               <div className="rules-body">
-                <p><strong>Goal:</strong> Be the last player standing. Win <strong>3 out of 5 rounds</strong> to win the match.</p>
+                <p><strong>Goal:</strong> Be the last light cycle on the grid. Win <strong>3 out of 5 rounds</strong> to win the match.</p>
                 <ul>
-                  <li>🎮 <strong>Move</strong> with <kbd>WASD</kbd> or arrow keys.</li>
-                  <li>⚡ <strong>Dash</strong> with <kbd>Space</kbd> — launches you in your movement direction. Dashing into an opponent sends them flying! (1.2 s cooldown)</li>
-                  <li>🟧 <strong>Tiles</strong> turn orange and crumble beneath you — standing on a fallen tile means instant elimination.</li>
-                  <li>💥 <strong>Knock</strong> opponents off the edge or onto fallen tiles to eliminate them.</li>
-                  <li>⏩ The platform shrinks faster over time — the longer the round goes, the more chaotic it gets!</li>
-                  <li>🏆 Scores carry over between rounds. The player with the most round wins after 5 rounds (or first to 3) wins the match.</li>
+                  <li>🏍 <strong>Steer</strong> with <kbd>WASD</kbd> or arrow keys — your bike moves automatically.</li>
+                  <li>💡 Your bike leaves a <strong>glowing trail wall</strong> behind it. That wall is permanent for the round.</li>
+                  <li>💥 <strong>Crash</strong> into any wall, arena border, or trail (yours or an opponent's) and you're eliminated.</li>
+                  <li>🤝 Two bikes targeting the same cell simultaneously both crash.</li>
+                  <li>🏆 Scores carry over between rounds. First to <strong>3 wins</strong> (best of 5) wins the match.</li>
                 </ul>
-                <p style={{ opacity: 0.6, fontSize: '0.78rem' }}>💡 Tip: Use the edges of the arena to your advantage — corner opponents near crumbling tiles before dashing!</p>
+                <p style={{ opacity: 0.6, fontSize: '0.78rem' }}>💡 Tip: Force opponents into tight corners — the longer you survive, the less open space remains!</p>
               </div>
             </details>
 

@@ -30,8 +30,8 @@ export default function HomePage({ onCreateLobby, onJoinLobby }: HomePageProps) 
   return (
     <div className="home-page">
       <div className="title-container">
-        <h1 className="game-title">NEON FALL</h1>
-        <p className="game-subtitle">Survive · Push · Win</p>
+        <h1 className="game-title">LIGHT CYCLES</h1>
+        <p className="game-subtitle">Ride · Trail · Survive</p>
       </div>
 
       <div className="menu-card">
@@ -86,9 +86,9 @@ export default function HomePage({ onCreateLobby, onJoinLobby }: HomePageProps) 
 
         <div style={{ marginTop: '2rem', padding: '1rem', background: 'rgba(0,255,255,0.03)', borderRadius: '8px', border: '1px solid rgba(0,255,255,0.1)' }}>
           <p style={{ fontSize: '0.8rem', color: 'rgba(200,200,255,0.5)', lineHeight: '1.6', textAlign: 'center' }}>
-            🎮 Last player standing wins<br />
-            WASD to move · Space to dash<br />
-            Push others off the shrinking platform!
+            🏍 Ride your light cycle — leave a wall behind<br />
+            WASD / Arrows to steer<br />
+            Don't crash into walls or other trails!
           </p>
         </div>
       </div>

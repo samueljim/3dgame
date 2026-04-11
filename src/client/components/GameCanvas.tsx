@@ -15,6 +15,7 @@ interface GameCanvasProps {
 
 export default function GameCanvas({ lobbyState: initialState, playerId, ws, onGameOver }: GameCanvasProps) {
   const canvasRef   = useRef<HTMLCanvasElement>(null);
+  const minimapRef  = useRef<HTMLCanvasElement>(null);
   const gameRef     = useRef<TronBikesGame | null>(null);
   const soundRef    = useRef<SoundManager>(new SoundManager());
   const countdownRef    = useRef<HTMLDivElement>(null);
@@ -69,7 +70,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     if (!canvasRef.current) return;
     const sound = soundRef.current;
 
-    const game = new TronBikesGame(canvasRef.current, ws, playerId, initialState, sound);
+    const game = new TronBikesGame(canvasRef.current, ws, playerId, initialState, sound, minimapRef.current ?? undefined);
     gameRef.current = game;
     sound.startAmbient();
     sound.startMusic(musicUrl);
@@ -164,6 +165,15 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     gameRef.current?.setKeys({ space: false });
   }, []);
 
+  const handleBoostPress = useCallback(() => {
+    soundRef.current.init();
+    gameRef.current?.setKeys({ shift: true });
+  }, []);
+
+  const handleBoostRelease = useCallback(() => {
+    gameRef.current?.setKeys({ shift: false });
+  }, []);
+
   const handleRestartGame = useCallback(() => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'restart_game' }));
@@ -175,6 +185,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
   const myPlayer = currentState.players.find(p => p.id === playerId);
   const alivePlayers = currentState.players.filter(p => p.isAlive);
   const jumpCharges = myPlayer?.jumpCharges ?? 0;
+  const boostCharges = myPlayer?.boostCharges ?? 0;
   const minutes = Math.floor(currentState.gameTime / 60);
   const seconds = Math.floor(currentState.gameTime % 60);
 
@@ -280,24 +291,31 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
             {alivePlayers.length} alive
           </div>
           <div className="hud-jump">
-            JUMP {jumpCharges > 0 ? `×${jumpCharges}` : '—'}
+            🟣 JUMP {jumpCharges > 0 ? `×${jumpCharges}` : '—'}
+          </div>
+          <div className="hud-boost">
+            ⚡ BOOST {boostCharges > 0 ? `×${boostCharges}` : '—'}
           </div>
         </div>
 
         <div className="hud-right">
           <button className="mute-btn" onClick={handleMuteToggle} title={isMuted ? 'Unmute' : 'Mute'}>
-            {isMuted ? '��' : '🔊'}
+            {isMuted ? '🔇' : '🔊'}
           </button>
           <div className="hud-controls">
             <div className="controls-title">Controls</div>
             WASD / Arrows — Steer<br />
-            Space — Jump (if charged)<br />
+            Space — Jump (purple)<br />
+            Shift — Boost (gold)<br />
             <span style={{ color: 'rgba(255,180,80,0.7)', fontSize: '0.65rem' }}>
-              Grab purple pickups for rare jumps.
+              Grab pickups to charge!
             </span>
           </div>
         </div>
       </div>
+
+      {/* Minimap */}
+      <canvas ref={minimapRef} className="minimap-canvas" width={160} height={160} />
 
       {/* Mobile controls */}
       <div className="mobile-controls">
@@ -311,10 +329,9 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
         >
           <div className="joystick-thumb" ref={joystickThumbRef} />
         </div>
-        <div className="mobile-action-btns" style={{ minWidth: '70px' }}>
+        <div className="mobile-action-btns">
           <button
-            className="btn btn-secondary"
-            style={{ minWidth: '70px', minHeight: '70px', borderRadius: '50%', padding: 0 }}
+            className="btn btn-secondary mobile-action-btn"
             onTouchStart={handleJumpPress}
             onTouchEnd={handleJumpRelease}
             onTouchCancel={handleJumpRelease}
@@ -322,7 +339,18 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
             onMouseUp={handleJumpRelease}
             onMouseLeave={handleJumpRelease}
           >
-            JUMP
+            🟣<br />JUMP
+          </button>
+          <button
+            className="btn mobile-action-btn btn-boost"
+            onTouchStart={handleBoostPress}
+            onTouchEnd={handleBoostRelease}
+            onTouchCancel={handleBoostRelease}
+            onMouseDown={handleBoostPress}
+            onMouseUp={handleBoostRelease}
+            onMouseLeave={handleBoostRelease}
+          >
+            ⚡<br />BOOST
           </button>
         </div>
       </div>

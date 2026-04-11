@@ -12,9 +12,11 @@ import {
 const DIRECTION_OPPOSITES: Record<Direction, Direction> = { N: 'S', S: 'N', E: 'W', W: 'E' };
 
 const MAX_JUMP_POWERUPS = 3;
-const POWERUP_SPAWN_CHANCE = 0.05;
-const POWERUP_SPAWN_MOVE_INTERVAL = 8;
+const MAX_BOOST_POWERUPS = 3;
+const POWERUP_SPAWN_CHANCE = 0.35;
+const POWERUP_SPAWN_MOVE_INTERVAL = 4;
 const MAX_JUMP_CHARGES = 3;
+const MAX_BOOST_CHARGES = 2;
 
 function clampCell(cell: number): number {
   return Math.max(2, Math.min(ARENA_SIZE - 3, cell));
@@ -154,6 +156,8 @@ export class GameLobby {
       direction: cfg.dir,
       jumpCharges: 0,
       isJumping: false,
+      boostCharges: 0,
+      isBoosting: false,
       score: 0,
     };
 
@@ -211,6 +215,8 @@ export class GameLobby {
       p.direction = cfg.dir;
       p.jumpCharges = 0;
       p.isJumping = false;
+      p.boostCharges = 0;
+      p.isBoosting = false;
     });
 
     // Countdown: 3 → 2 → 1 → GO
@@ -286,6 +292,7 @@ export class GameLobby {
 
     for (const player of this.lobbyState.players) {
       player.isJumping = false;
+      player.isBoosting = false;
     }
 
     // 1. Determine the direction each alive player wants to move
@@ -393,13 +400,51 @@ export class GameLobby {
         player.isJumping = true;
       }
 
-      const pickupIndex = this.lobbyState.powerUps.findIndex(
-        pu => pu.type === 'jump' && pu.position.x === player.position.x && pu.position.z === player.position.z,
-      );
-      if (pickupIndex >= 0) {
-        player.jumpCharges = Math.min(MAX_JUMP_CHARGES, player.jumpCharges + 1);
-        this.lobbyState.powerUps.splice(pickupIndex, 1);
+      this.applyPickup(player);
+    }
+
+    // 4.5  Boost double-step: players holding Shift with boostCharges get a second move
+    const boostSecondStep = new Map<string, { x: number; z: number }>();
+    for (const [playerId] of nextPos) {
+      const player = this.lobbyState.players.find(p => p.id === playerId)!;
+      const session = this.sessions.get(playerId)!;
+      if (!session.keys.shift || player.boostCharges <= 0) continue;
+
+      const dir = player.direction;
+      let bx = player.position.x, bz = player.position.z;
+      switch (dir) {
+        case 'N': bz -= 1; break;
+        case 'S': bz += 1; break;
+        case 'E': bx += 1; break;
+        case 'W': bx -= 1; break;
       }
+
+      if (bx < 0 || bx >= ARENA_SIZE || bz < 0 || bz >= ARENA_SIZE) continue;
+      if (this.lobbyState.trail[bx][bz] !== 0) continue;
+      if (this.lobbyState.players.some(p => p.isAlive && p.id !== playerId && p.position.x === bx && p.position.z === bz)) continue;
+
+      boostSecondStep.set(playerId, { x: bx, z: bz });
+    }
+
+    // Head-on boost collisions
+    const boostTargetMap = new Map<string, string[]>();
+    for (const [id, pos] of boostSecondStep) {
+      const key = `${pos.x},${pos.z}`;
+      if (!boostTargetMap.has(key)) boostTargetMap.set(key, []);
+      boostTargetMap.get(key)!.push(id);
+    }
+    for (const [, ids] of boostTargetMap) {
+      if (ids.length > 1) ids.forEach(id => boostSecondStep.delete(id));
+    }
+
+    for (const [playerId, boostPos] of boostSecondStep) {
+      const player = this.lobbyState.players.find(p => p.id === playerId)!;
+      const session = this.sessions.get(playerId)!;
+      this.lobbyState.trail[player.position.x][player.position.z] = session.colorIndex + 1;
+      player.position = boostPos;
+      player.boostCharges -= 1;
+      player.isBoosting = true;
+      this.applyPickup(player);
     }
 
     // 5. Eliminate crashed bikes (also mark their final cell)
@@ -423,17 +468,39 @@ export class GameLobby {
       this.endRound(alive[0] ?? null);
       return;
     }
-    this.maybeSpawnJumpPowerUp();
+    this.maybeSpawnPowerUps();
   }
 
-  private maybeSpawnJumpPowerUp(): void {
+  /** Apply any power-up pickup at the player's current position. */
+  private applyPickup(player: Player): void {
+    const pickupIndex = this.lobbyState.powerUps.findIndex(
+      pu => pu.position.x === player.position.x && pu.position.z === player.position.z,
+    );
+    if (pickupIndex < 0) return;
+    const pu = this.lobbyState.powerUps[pickupIndex];
+    if (pu.type === 'jump') {
+      player.jumpCharges = Math.min(MAX_JUMP_CHARGES, player.jumpCharges + 1);
+    } else if (pu.type === 'boost') {
+      player.boostCharges = Math.min(MAX_BOOST_CHARGES, player.boostCharges + 1);
+    }
+    this.lobbyState.powerUps.splice(pickupIndex, 1);
+  }
+
+  private maybeSpawnPowerUps(): void {
     if (this.moveCount % POWERUP_SPAWN_MOVE_INTERVAL !== 0) return;
-    if (this.lobbyState.powerUps.length >= MAX_JUMP_POWERUPS) return;
     if (Math.random() > POWERUP_SPAWN_CHANCE) return;
 
     const minCell = 2;
     const maxCell = ARENA_SIZE - 3;
     const span = maxCell - minCell + 1;
+
+    // Decide which type to spawn; bias toward jump if there are few of each
+    const jumpCount = this.lobbyState.powerUps.filter(p => p.type === 'jump').length;
+    const boostCount = this.lobbyState.powerUps.filter(p => p.type === 'boost').length;
+    const canSpawnJump = jumpCount < MAX_JUMP_POWERUPS;
+    const canSpawnBoost = boostCount < MAX_BOOST_POWERUPS;
+    if (!canSpawnJump && !canSpawnBoost) return;
+    const spawnType = (!canSpawnJump || (canSpawnBoost && Math.random() < 0.4)) ? 'boost' : 'jump';
 
     for (let attempt = 0; attempt < 60; attempt++) {
       const x = minCell + Math.floor(Math.random() * span);
@@ -443,7 +510,7 @@ export class GameLobby {
       if (this.lobbyState.powerUps.some(pu => pu.position.x === x && pu.position.z === z)) continue;
       this.lobbyState.powerUps.push({
         id: crypto.randomUUID(),
-        type: 'jump',
+        type: spawnType,
         position: { x, z },
       });
       return;
@@ -543,6 +610,8 @@ export class GameLobby {
       p.direction = cfg.dir;
       p.jumpCharges = 0;
       p.isJumping = false;
+      p.boostCharges = 0;
+      p.isBoosting = false;
     });
 
     this.broadcastAll({ type: 'lobby_update', lobbyState: this.lobbyState });

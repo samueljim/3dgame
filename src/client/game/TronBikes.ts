@@ -16,6 +16,18 @@ const PLAYER_COLORS_HEX: Record<string, number> = {
   pink:   0xff22aa,
 };
 
+/** CSS colours used on the minimap (must match PLAYER_COLORS_HEX). */
+const MINIMAP_COLORS: Record<string, string> = {
+  red:    '#ff2222',
+  green:  '#22ff44',
+  yellow: '#ffee22',
+  purple: '#bb22ff',
+  blue:   '#2266ff',
+  cyan:   '#22ffee',
+  orange: '#ff8822',
+  pink:   '#ff22aa',
+};
+
 const ARENA_HALF = (ARENA_SIZE * CELL_SIZE) / 2;
 
 /** Milliseconds between input messages sent to the server (~25 per second). */
@@ -40,6 +52,13 @@ const POWERUP_BASE_HEIGHT = 0.9;
 const POWERUP_FLOAT_SPEED = 4;
 const POWERUP_FLOAT_PHASE_SCALE = 0.07;
 const POWERUP_FLOAT_AMPLITUDE = 0.12;
+
+/** Trail wall heights per speed level (taller = more dramatic). */
+const TRAIL_HEIGHTS = [1.2, 2.0, 3.2, 5.0] as const;
+/** Y centre position for trail mesh at each speed level (height / 2). */
+const TRAIL_Y_CENTERS = [0.6, 1.0, 1.6, 2.5] as const;
+/** Target camera FOV per speed level — wider at higher speeds. */
+const SPEED_FOV = [55, 62, 70, 80] as const;
 
 /** Map direction → Y rotation (radians) for bike mesh. */
 const DIR_TO_ROT: Record<Direction, number> = {
@@ -83,9 +102,13 @@ export class TronBikesGame {
   private trailMeshes: (THREE.Mesh | null)[][] = [];
   private prevTrail: number[][] = [];
 
-  // Shared geometry and per-colour materials for trail segments (avoids geometry churn)
-  private trailGeo!: THREE.BoxGeometry;
+  // Per-speed-level trail geometries; one material per player colour
+  private trailGeos!: THREE.BoxGeometry[];
   private trailMats: THREE.MeshStandardMaterial[] = [];
+
+  // Minimap
+  private minimapCanvas: HTMLCanvasElement | null = null;
+  private minimapCtx: CanvasRenderingContext2D | null = null;
 
   // Input state
   private keys = { w: false, a: false, s: false, d: false, space: false, shift: false };
@@ -96,18 +119,24 @@ export class TronBikesGame {
   // Camera shake
   private cameraShake = { intensity: 0, decay: 0.88 };
 
+  // Current interpolated FOV
+  private currentFov = 55;
+
   constructor(
     canvas: HTMLCanvasElement,
     ws: WebSocket,
     myPlayerId: string,
     initialState: LobbyState,
     soundManager: SoundManager,
+    minimapCanvas?: HTMLCanvasElement,
   ) {
     this.ws = ws;
     this.myPlayerId = myPlayerId;
     this.lobbyState = initialState;
     this.clock = new THREE.Clock();
     this.soundManager = soundManager;
+    this.minimapCanvas = minimapCanvas ?? null;
+    this.minimapCtx = minimapCanvas?.getContext('2d') ?? null;
 
     // Renderer
     this.renderer = new THREE.WebGLRenderer({
@@ -141,8 +170,10 @@ export class TronBikesGame {
       new VignetteEffect({ darkness: 0.55 }),
     ));
 
-    // Pre-build shared trail geometry and one material per player colour
-    this.trailGeo = new THREE.BoxGeometry(CELL_SIZE * 0.82, 1.2, CELL_SIZE * 0.82);
+    // Per-speed-level trail geometries
+    this.trailGeos = TRAIL_HEIGHTS.map(h => new THREE.BoxGeometry(CELL_SIZE * 0.82, h, CELL_SIZE * 0.82));
+
+    // One material per player colour
     for (const colorName of PLAYER_COLORS) {
       const colorHex = PLAYER_COLORS_HEX[colorName] ?? 0xffffff;
       this.trailMats.push(new THREE.MeshStandardMaterial({
@@ -321,6 +352,16 @@ export class TronBikesGame {
         mesh.light.intensity = 3.0;
       }
 
+      // Detect power-up pickup (charges increased) — play sound for local player
+      if (player.id === this.myPlayerId && prev) {
+        if (player.jumpCharges > prev.jumpCharges || player.boostCharges > prev.boostCharges) {
+          this.soundManager.playPickup();
+        }
+        if (player.isBoosting && !prev.isBoosting) {
+          this.soundManager.playBoost();
+        }
+      }
+
       if (!player.isAlive) continue;
 
       const wx = player.position.x * CELL_SIZE;
@@ -385,6 +426,7 @@ export class TronBikesGame {
   }
 
   private syncTrail(trail: number[][]): void {
+    const speedLevel = Math.min(this.lobbyState.speedLevel, TRAIL_HEIGHTS.length - 1);
     for (let x = 0; x < ARENA_SIZE; x++) {
       const row = trail[x];
       if (!row) continue;
@@ -401,8 +443,10 @@ export class TronBikesGame {
           const colorIdx = cur - 1; // 0-based
           const mat = this.trailMats[colorIdx];
           if (mat) {
-            const m = new THREE.Mesh(this.trailGeo, mat);
-            m.position.set(x * CELL_SIZE, 0.6, z * CELL_SIZE);
+            const geo = this.trailGeos[speedLevel];
+            const yCenter = TRAIL_Y_CENTERS[speedLevel];
+            const m = new THREE.Mesh(geo, mat);
+            m.position.set(x * CELL_SIZE, yCenter, z * CELL_SIZE);
             // Snappy pop-in animation
             m.scale.set(0.01, 0.01, 0.01);
             this.scene.add(m);
@@ -420,26 +464,27 @@ export class TronBikesGame {
     for (const [id, mesh] of this.powerUpMeshes) {
       if (!currentIds.has(id)) {
         this.scene.remove(mesh);
+        mesh.geometry.dispose();
+        (mesh.material as THREE.Material).dispose();
         this.powerUpMeshes.delete(id);
       }
     }
 
     for (const powerUp of powerUps) {
-      if (powerUp.type !== 'jump') continue;
-      if (!this.powerUpMeshes.has(powerUp.id)) {
-        const geo = new THREE.OctahedronGeometry(CELL_SIZE * POWERUP_SIZE_RATIO, 0);
-        const mat = new THREE.MeshStandardMaterial({
-          color: 0xff66ff,
-          emissive: 0xff22ee,
-          emissiveIntensity: POWERUP_EMISSIVE_INTENSITY,
-          roughness: 0.15,
-          metalness: 0.75,
-        });
-        const mesh = new THREE.Mesh(geo, mat);
-        mesh.position.set(powerUp.position.x * CELL_SIZE, POWERUP_BASE_HEIGHT, powerUp.position.z * CELL_SIZE);
-        this.powerUpMeshes.set(powerUp.id, mesh);
-        this.scene.add(mesh);
-      }
+      if (this.powerUpMeshes.has(powerUp.id)) continue;
+      const isBoost = powerUp.type === 'boost';
+      const geo = new THREE.OctahedronGeometry(CELL_SIZE * POWERUP_SIZE_RATIO, 0);
+      const mat = new THREE.MeshStandardMaterial({
+        color:    isBoost ? 0xffcc00 : 0xff66ff,
+        emissive: isBoost ? 0xffaa00 : 0xff22ee,
+        emissiveIntensity: POWERUP_EMISSIVE_INTENSITY,
+        roughness: 0.15,
+        metalness: 0.75,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(powerUp.position.x * CELL_SIZE, POWERUP_BASE_HEIGHT, powerUp.position.z * CELL_SIZE);
+      this.powerUpMeshes.set(powerUp.id, mesh);
+      this.scene.add(mesh);
     }
   }
 
@@ -461,7 +506,7 @@ export class TronBikesGame {
         case 'KeyA': case 'ArrowLeft':  this.keys.a = true;  e.preventDefault(); break;
         case 'KeyD': case 'ArrowRight': this.keys.d = true;  e.preventDefault(); break;
         case 'Space':                   this.keys.space = true; e.preventDefault(); break;
-        case 'ShiftLeft': case 'ShiftRight': this.keys.shift = true; break;
+        case 'ShiftLeft': case 'ShiftRight': this.keys.shift = true; e.preventDefault(); break;
       }
     };
     this.keyUpHandler = (e: KeyboardEvent) => {
@@ -486,6 +531,65 @@ export class TronBikesGame {
       const msg: ClientMessage = { type: 'input', keys: { ...this.keys } };
       this.ws.send(JSON.stringify(msg));
     }
+  }
+
+  // ─── Minimap ─────────────────────────────────────────────────────────────────
+
+  private drawMinimap(): void {
+    const canvas = this.minimapCanvas;
+    const ctx = this.minimapCtx;
+    if (!canvas || !ctx) return;
+
+    const size = canvas.width;
+    const scale = size / ARENA_SIZE;
+
+    ctx.clearRect(0, 0, size, size);
+    ctx.fillStyle = 'rgba(0, 5, 20, 0.88)';
+    ctx.fillRect(0, 0, size, size);
+
+    // Trail cells
+    for (let x = 0; x < ARENA_SIZE; x++) {
+      const row = this.lobbyState.trail[x];
+      if (!row) continue;
+      for (let z = 0; z < ARENA_SIZE; z++) {
+        const t = row[z];
+        if (!t) continue;
+        const colorName = PLAYER_COLORS[t - 1];
+        ctx.fillStyle = MINIMAP_COLORS[colorName] ?? '#ffffff';
+        ctx.fillRect(x * scale, z * scale, scale + 0.5, scale + 0.5);
+      }
+    }
+
+    // Power-ups
+    for (const pu of this.lobbyState.powerUps) {
+      ctx.fillStyle = pu.type === 'boost' ? '#ffcc00' : '#ff66ff';
+      const cx = pu.position.x * scale + scale * 0.5;
+      const cz = pu.position.z * scale + scale * 0.5;
+      ctx.fillRect(cx - 1.5, cz - 1.5, 3, 3);
+    }
+
+    // Players
+    for (const player of this.lobbyState.players) {
+      if (!player.isAlive) continue;
+      const isMe = player.id === this.myPlayerId;
+      ctx.fillStyle = MINIMAP_COLORS[player.color] ?? '#ffffff';
+      const px = player.position.x * scale + scale * 0.5;
+      const pz = player.position.z * scale + scale * 0.5;
+      const r = isMe ? 3.5 : 2.2;
+      ctx.beginPath();
+      ctx.arc(px, pz, r, 0, Math.PI * 2);
+      ctx.fill();
+      if (isMe) {
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+
+    // Border
+    ctx.strokeStyle = 'rgba(0, 100, 255, 0.55)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(0.5, 0.5, size - 1, size - 1);
   }
 
   // ─── Render Loop ─────────────────────────────────────────────────────────────
@@ -521,6 +625,16 @@ export class TronBikesGame {
       // Smooth rotation — take the shortest angular path to avoid spinning the wrong way
       const delta = shortestAngleDelta(mesh.body.rotation.y, mesh.targetRotY);
       mesh.body.rotation.y += delta * rotAlpha;
+
+      // Pulse emissive intensity when player is boosting
+      if (player?.isBoosting) {
+        (mesh.body.material as THREE.MeshStandardMaterial).emissiveIntensity = 4.5;
+        mesh.light.intensity = 8.0;
+      } else {
+        const mat = mesh.body.material as THREE.MeshStandardMaterial;
+        if (mat.emissiveIntensity > 1.1) mat.emissiveIntensity *= 0.88;
+        if (mesh.light.intensity > 3.0) mesh.light.intensity *= 0.88;
+      }
     }
 
     // Power-up float / spin
@@ -534,22 +648,31 @@ export class TronBikesGame {
       ) * POWERUP_FLOAT_AMPLITUDE;
     }
 
-    // Smooth behind-bike camera
+    // Interpolate FOV toward target for current speed level
+    const speedLevel = Math.min(this.lobbyState.speedLevel, SPEED_FOV.length - 1);
+    const targetFov = SPEED_FOV[speedLevel];
+    this.currentFov += (targetFov - this.currentFov) * Math.min(1, dt * 2.5);
+    if (Math.abs(this.currentFov - this.camera.fov) > 0.05) {
+      this.camera.fov = this.currentFov;
+      this.camera.updateProjectionMatrix();
+    }
+
+    // Camera: follow-behind when alive; slow top-down orbit when spectating
     const myBike = this.bikeMeshes.get(this.myPlayerId);
-    if (myBike) {
-      const rot = myBike.body.rotation.y;
+    const iAmAlive = myBike?.alive === true;
+
+    if (iAmAlive) {
+      const rot = myBike!.body.rotation.y;
       const dirX = -Math.sin(rot);
       const dirZ = -Math.cos(rot);
-      const desiredX = myBike.body.position.x - dirX * CAMERA_FOLLOW_DISTANCE;
-      const desiredY = myBike.body.position.y + CAMERA_HEIGHT;
-      const desiredZ = myBike.body.position.z - dirZ * CAMERA_FOLLOW_DISTANCE;
+      const desiredX = myBike!.body.position.x - dirX * CAMERA_FOLLOW_DISTANCE;
+      const desiredY = myBike!.body.position.y + CAMERA_HEIGHT;
+      const desiredZ = myBike!.body.position.z - dirZ * CAMERA_FOLLOW_DISTANCE;
       this.camera.position.x += (desiredX - this.camera.position.x) * cameraAlpha;
       this.camera.position.y += (desiredY - this.camera.position.y) * cameraAlpha;
       this.camera.position.z += (desiredZ - this.camera.position.z) * cameraAlpha;
 
-      let shakeX = 0;
-      let shakeY = 0;
-      let shakeZ = 0;
+      let shakeX = 0, shakeY = 0, shakeZ = 0;
       if (this.cameraShake.intensity > 0.001) {
         const s = this.cameraShake.intensity;
         shakeX = (Math.random() - 0.5) * s;
@@ -557,17 +680,28 @@ export class TronBikesGame {
         shakeZ = (Math.random() - 0.5) * s;
         this.cameraShake.intensity *= this.cameraShake.decay;
       }
-
       this.camera.position.x += shakeX;
       this.camera.position.y += shakeY;
       this.camera.position.z += shakeZ;
       this.camera.lookAt(
-        myBike.body.position.x + dirX * CAMERA_LOOK_AHEAD,
-        myBike.body.position.y + 0.5,
-        myBike.body.position.z + dirZ * CAMERA_LOOK_AHEAD,
+        myBike!.body.position.x + dirX * CAMERA_LOOK_AHEAD,
+        myBike!.body.position.y + 0.5,
+        myBike!.body.position.z + dirZ * CAMERA_LOOK_AHEAD,
       );
+    } else {
+      // Spectator: slowly orbit top-down so eliminated players can watch
+      const orbitT = t * 0.07;
+      const orbitR = ARENA_HALF * 0.7;
+      const spectX = ARENA_HALF + Math.cos(orbitT) * orbitR;
+      const spectY = ARENA_HALF * 1.4;
+      const spectZ = ARENA_HALF + Math.sin(orbitT) * orbitR;
+      this.camera.position.x += (spectX - this.camera.position.x) * 0.012;
+      this.camera.position.y += (spectY - this.camera.position.y) * 0.012;
+      this.camera.position.z += (spectZ - this.camera.position.z) * 0.012;
+      this.camera.lookAt(ARENA_HALF, 0, ARENA_HALF);
     }
 
+    this.drawMinimap();
     this.sendInput();
     this.composer.render();
   };
@@ -595,7 +729,7 @@ export class TronBikesGame {
       (powerUpMesh.material as THREE.Material).dispose();
     }
     this.powerUpMeshes.clear();
-    this.trailGeo.dispose();
+    for (const geo of this.trailGeos) geo.dispose();
     for (const mat of this.trailMats) mat.dispose();
     this.renderer.dispose();
   }

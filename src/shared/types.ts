@@ -16,6 +16,8 @@ export interface Player {
   direction: Direction;
   jumpCharges: number;
   isJumping: boolean;
+  boostCharges: number;
+  isBoosting: boolean;
   score: number;
 }
 
@@ -43,7 +45,7 @@ export interface LobbyState {
   powerUps: PowerUp[];
 }
 
-export type PowerUpType = 'jump';
+export type PowerUpType = 'jump' | 'boost';
 
 export interface PowerUp {
   id: string;

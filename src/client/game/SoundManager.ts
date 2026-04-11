@@ -236,6 +236,48 @@ export class SoundManager {
     this.ambientOscillators = [];
   }
 
+  playPickup(): void {
+    const ac = this.ac;
+    const now = ac.currentTime;
+    const freqs = [600, 900, 1300];
+    freqs.forEach((f, i) => {
+      const start = now + i * 0.055;
+      const osc = ac.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.value = f;
+      const gain = ac.createGain();
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(0.18, start + 0.025);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.18);
+      osc.connect(gain);
+      gain.connect(this.mg);
+      osc.start(start);
+      osc.stop(start + 0.18);
+    });
+  }
+
+  playBoost(): void {
+    const ac = this.ac;
+    const now = ac.currentTime;
+    const osc = ac.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(220, now);
+    osc.frequency.exponentialRampToValueAtTime(700, now + 0.13);
+    const gain = ac.createGain();
+    gain.gain.setValueAtTime(0.22, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    const filter = ac.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(3000, now);
+    filter.frequency.exponentialRampToValueAtTime(8000, now + 0.13);
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.mg);
+    osc.start(now);
+    osc.stop(now + 0.18);
+  }
+
+
   playCollision(): void {
     const ac = this.ac;
     const now = ac.currentTime;

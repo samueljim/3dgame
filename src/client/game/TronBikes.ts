@@ -744,9 +744,8 @@ export class TronBikesGame {
       if (!mesh.alive) continue;
 
       // Position (time-based smoothing between discrete server cells)
-      const moveT = mesh.moveDuration > 0
-        ? Math.min(1, (now - mesh.moveStartAt) / mesh.moveDuration)
-        : 1;
+      const safeMoveDuration = Math.max(1, mesh.moveDuration);
+      const moveT = Math.min(1, (now - mesh.moveStartAt) / safeMoveDuration);
       const smoothMoveT = moveT * moveT * (3 - 2 * moveT);
       mesh.group.position.x = mesh.startX + (mesh.targetX - mesh.startX) * smoothMoveT;
       mesh.group.position.z = mesh.startZ + (mesh.targetZ - mesh.startZ) * smoothMoveT;

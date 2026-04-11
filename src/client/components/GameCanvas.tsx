@@ -13,6 +13,8 @@ interface GameCanvasProps {
   onGameOver: () => void;
 }
 
+const SWIPE_KEY_RELEASE_DELAY_MS = 100;
+
 export default function GameCanvas({ lobbyState: initialState, playerId, ws, onGameOver }: GameCanvasProps) {
   const canvasRef   = useRef<HTMLCanvasElement>(null);
   const minimapRef  = useRef<HTMLCanvasElement>(null);
@@ -20,8 +22,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
   const soundRef    = useRef<SoundManager>(new SoundManager());
   const countdownRef    = useRef<HTMLDivElement>(null);
   const countdownNumRef = useRef<HTMLDivElement>(null);
-  const joystickRef      = useRef<HTMLDivElement>(null);
-  const joystickThumbRef = useRef<HTMLDivElement>(null);
+  const swipeReleaseTimeoutRef = useRef<number | null>(null);
 
   const [currentState, setCurrentState] = useState(initialState);
   const [gameOver, setGameOver]         = useState(false);
@@ -30,7 +31,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
   const [countdownVisible, setCountdownVisible] = useState(false);
 
   const touchState = useRef({
-    active: false, touchId: -1, startX: 0, startY: 0, dx: 0, dy: 0,
+    active: false, touchId: -1, startX: 0, startY: 0,
   });
 
   const showCountdownNumber = useCallback((text: string, color: string, duration: number) => {
@@ -97,6 +98,9 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
 
     ws.addEventListener('message', handleMessage);
     return () => {
+      if (swipeReleaseTimeoutRef.current !== null) {
+        window.clearTimeout(swipeReleaseTimeoutRef.current);
+      }
       ws.removeEventListener('message', handleMessage);
       game.destroy();
       sound.stopAmbient();
@@ -104,74 +108,57 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     };
   }, []);
 
-  // ─── Mobile joystick ──────────────────────────────────────────────────────
-
-  const handleJoystickStart = useCallback((e: React.TouchEvent) => {
+  const applySwipeDirection = useCallback((dir: 'N' | 'S' | 'E' | 'W') => {
+    const game = gameRef.current;
+    if (!game) return;
     soundRef.current.init();
-    const touch = e.changedTouches[0];
-    const ts = touchState.current;
-    ts.active = true; ts.touchId = touch.identifier;
-    ts.startX = touch.clientX; ts.startY = touch.clientY;
-    ts.dx = 0; ts.dy = 0;
+    game.setKeys({ w: false, a: false, s: false, d: false });
+    if (dir === 'N') game.setKeys({ w: true });
+    if (dir === 'S') game.setKeys({ s: true });
+    if (dir === 'E') game.setKeys({ d: true });
+    if (dir === 'W') game.setKeys({ a: true });
+    if (swipeReleaseTimeoutRef.current !== null) {
+      window.clearTimeout(swipeReleaseTimeoutRef.current);
+    }
+    swipeReleaseTimeoutRef.current = window.setTimeout(() => {
+      gameRef.current?.setKeys({ w: false, a: false, s: false, d: false });
+      swipeReleaseTimeoutRef.current = null;
+    }, SWIPE_KEY_RELEASE_DELAY_MS);
   }, []);
 
-  const handleJoystickMove = useCallback((e: React.TouchEvent) => {
-    e.preventDefault();
+  const handleSwipeStart = useCallback((e: React.TouchEvent) => {
+    const touch = e.changedTouches[0];
+    const ts = touchState.current;
+    ts.active = true;
+    ts.touchId = touch.identifier;
+    ts.startX = touch.clientX;
+    ts.startY = touch.clientY;
+  }, []);
+
+  const handleSwipeEnd = useCallback((e: React.TouchEvent) => {
     const ts = touchState.current;
     if (!ts.active) return;
     for (let i = 0; i < e.changedTouches.length; i++) {
+      if (e.changedTouches[i].identifier !== ts.touchId) continue;
       const touch = e.changedTouches[i];
-      if (touch.identifier !== ts.touchId) continue;
       const dx = touch.clientX - ts.startX;
       const dy = touch.clientY - ts.startY;
-      const maxR = 40;
-      ts.dx = Math.max(-maxR, Math.min(maxR, dx));
-      ts.dy = Math.max(-maxR, Math.min(maxR, dy));
-      const thumb = joystickThumbRef.current;
-      if (thumb) thumb.style.transform = `translate(${ts.dx}px, ${ts.dy}px)`;
-      const game = gameRef.current;
-      if (game) {
-        const thr = 12;
-        game.setKeys({ w: ts.dy < -thr, s: ts.dy > thr, a: ts.dx < -thr, d: ts.dx > thr });
+      const absX = Math.abs(dx);
+      const absY = Math.abs(dy);
+      const minSwipe = 18;
+      if (absX >= minSwipe || absY >= minSwipe) {
+        if (absX > absY) applySwipeDirection(dx > 0 ? 'E' : 'W');
+        else applySwipeDirection(dy > 0 ? 'S' : 'N');
       }
+      ts.active = false;
       break;
     }
-  }, []);
-
-  const handleJoystickEnd = useCallback((e: React.TouchEvent) => {
-    const ts = touchState.current;
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      if (e.changedTouches[i].identifier !== ts.touchId) continue;
-      ts.active = false; ts.dx = 0; ts.dy = 0;
-      const thumb = joystickThumbRef.current;
-      if (thumb) thumb.style.transform = 'translate(0px, 0px)';
-      gameRef.current?.setKeys({ w: false, s: false, a: false, d: false });
-      break;
-    }
-  }, []);
+  }, [applySwipeDirection]);
 
   const handleMuteToggle = useCallback(() => {
     soundRef.current.init();
     soundRef.current.toggleMute();
     setIsMuted(soundRef.current.isMuted);
-  }, []);
-
-  const handleJumpPress = useCallback(() => {
-    soundRef.current.init();
-    gameRef.current?.setKeys({ space: true });
-  }, []);
-
-  const handleJumpRelease = useCallback(() => {
-    gameRef.current?.setKeys({ space: false });
-  }, []);
-
-  const handleBoostPress = useCallback(() => {
-    soundRef.current.init();
-    gameRef.current?.setKeys({ shift: true });
-  }, []);
-
-  const handleBoostRelease = useCallback(() => {
-    gameRef.current?.setKeys({ shift: false });
   }, []);
 
   const handleRestartGame = useCallback(() => {
@@ -307,6 +294,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
             WASD / Arrows — Steer<br />
             Space — Jump (purple)<br />
             Shift — Boost (gold)<br />
+            Mobile — Swipe to steer<br />
             <span style={{ color: 'rgba(255,180,80,0.7)', fontSize: '0.65rem' }}>
               Grab pickups to charge!
             </span>
@@ -320,38 +308,12 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
       {/* Mobile controls */}
       <div className="mobile-controls">
         <div
-          className="joystick-area"
-          ref={joystickRef}
-          onTouchStart={handleJoystickStart}
-          onTouchMove={handleJoystickMove}
-          onTouchEnd={handleJoystickEnd}
-          onTouchCancel={handleJoystickEnd}
+          className="swipe-pad"
+          onTouchStart={handleSwipeStart}
+          onTouchEnd={handleSwipeEnd}
+          onTouchCancel={handleSwipeEnd}
         >
-          <div className="joystick-thumb" ref={joystickThumbRef} />
-        </div>
-        <div className="mobile-action-btns">
-          <button
-            className="btn btn-secondary mobile-action-btn"
-            onTouchStart={handleJumpPress}
-            onTouchEnd={handleJumpRelease}
-            onTouchCancel={handleJumpRelease}
-            onMouseDown={handleJumpPress}
-            onMouseUp={handleJumpRelease}
-            onMouseLeave={handleJumpRelease}
-          >
-            🟣<br />JUMP
-          </button>
-          <button
-            className="btn mobile-action-btn btn-boost"
-            onTouchStart={handleBoostPress}
-            onTouchEnd={handleBoostRelease}
-            onTouchCancel={handleBoostRelease}
-            onMouseDown={handleBoostPress}
-            onMouseUp={handleBoostRelease}
-            onMouseLeave={handleBoostRelease}
-          >
-            ⚡<br />BOOST
-          </button>
+          <div className="swipe-pad-inner">Swipe to steer</div>
         </div>
       </div>
 

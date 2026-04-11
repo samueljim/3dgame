@@ -319,14 +319,10 @@ export class GameLobby {
         case 'E': nx += 1; break;
         case 'W': nx -= 1; break;
       }
+      nx = (nx + ARENA_SIZE) % ARENA_SIZE;
+      nz = (nz + ARENA_SIZE) % ARENA_SIZE;
 
       const canJump = session.keys.space && player.jumpCharges > 0;
-
-      // Out-of-bounds → eliminate
-      if (nx < 0 || nx >= ARENA_SIZE || nz < 0 || nz >= ARENA_SIZE) {
-        toEliminate.add(playerId);
-        continue;
-      }
 
       // Trail / occupied cell → eliminate (unless using a jump charge to clear one cell)
       if (this.lobbyState.trail[nx][nz] !== 0) {
@@ -339,10 +335,9 @@ export class GameLobby {
             case 'E': jx += 1; break;
             case 'W': jx -= 1; break;
           }
-          if (
-            jx < 0 || jx >= ARENA_SIZE || jz < 0 || jz >= ARENA_SIZE ||
-            this.lobbyState.trail[jx][jz] !== 0
-          ) {
+          jx = (jx + ARENA_SIZE) % ARENA_SIZE;
+          jz = (jz + ARENA_SIZE) % ARENA_SIZE;
+          if (this.lobbyState.trail[jx][jz] !== 0) {
             toEliminate.add(playerId);
             continue;
           }
@@ -418,8 +413,9 @@ export class GameLobby {
         case 'E': bx += 1; break;
         case 'W': bx -= 1; break;
       }
+      bx = (bx + ARENA_SIZE) % ARENA_SIZE;
+      bz = (bz + ARENA_SIZE) % ARENA_SIZE;
 
-      if (bx < 0 || bx >= ARENA_SIZE || bz < 0 || bz >= ARENA_SIZE) continue;
       if (this.lobbyState.trail[bx][bz] !== 0) continue;
       if (this.lobbyState.players.some(p => p.isAlive && p.id !== playerId && p.position.x === bx && p.position.z === bz)) continue;
 
@@ -490,8 +486,8 @@ export class GameLobby {
     if (this.moveCount % POWERUP_SPAWN_MOVE_INTERVAL !== 0) return;
     if (Math.random() > POWERUP_SPAWN_CHANCE) return;
 
-    const minCell = 2;
-    const maxCell = ARENA_SIZE - 3;
+    const minCell = 0;
+    const maxCell = ARENA_SIZE - 1;
     const span = maxCell - minCell + 1;
 
     // Decide which type to spawn; bias toward jump if there are few of each

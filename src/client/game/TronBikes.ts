@@ -2,7 +2,14 @@ import * as THREE from 'three';
 import { EffectComposer, RenderPass, EffectPass, BloomEffect, VignetteEffect } from 'postprocessing';
 import { gsap } from 'gsap';
 import type { LobbyState, Player, ClientMessage, Direction, PowerUp } from '@shared/types';
-import { ARENA_SIZE, CELL_SIZE, PLAYER_COLORS, SPEED_LEVEL_THRESHOLDS } from '@shared/types';
+import {
+  ARENA_SIZE,
+  CELL_SIZE,
+  PLAYER_COLORS,
+  SPEED_LEVEL_THRESHOLDS,
+  SPEED_MOVE_TICKS,
+  TICK_RATE,
+} from '@shared/types';
 import type { SoundManager } from './SoundManager';
 
 const PLAYER_COLORS_HEX: Record<string, number> = {
@@ -43,15 +50,17 @@ const INTERP_TARGET_FPS = 60;
 /** Rotation interpolation — faster than position for snappy feel. */
 const ROT_INTERP_BASE = 0.008;
 const CAMERA_INTERP_BASE = 0.03;
-const CAMERA_FOLLOW_DISTANCE = CELL_SIZE * 5.2;
-const CAMERA_HEIGHT = CELL_SIZE * 2.3;
-const CAMERA_LOOK_AHEAD = CELL_SIZE * 2.8;
+const CAMERA_FOLLOW_DISTANCE = CELL_SIZE * 8.4;
+const CAMERA_HEIGHT = CELL_SIZE * 3.1;
+const CAMERA_LOOK_AHEAD = CELL_SIZE * 3.9;
 const POWERUP_SIZE_RATIO = 0.23;
 const POWERUP_EMISSIVE_INTENSITY = 2.7;
 const POWERUP_BASE_HEIGHT = 0.9;
 const POWERUP_FLOAT_SPEED = 4;
 const POWERUP_FLOAT_PHASE_SCALE = 0.07;
 const POWERUP_FLOAT_AMPLITUDE = 0.12;
+const MIN_MOVE_DURATION_MS = 1;
+const MIN_SEGMENT_DURATION_MS = 45;
 
 /** Trail wall heights per speed level (taller = more dramatic). */
 const TRAIL_HEIGHTS = [1.2, 2.0, 3.2, 5.0] as const;
@@ -119,6 +128,13 @@ interface BikeMesh {
   prevTargetRotY: number;
   /** Current lean target angle (radians, springs toward 0). */
   leanZ: number;
+  /** Smoothing segment start position (world units). */
+  startX: number;
+  startZ: number;
+  /** Timestamp of current movement segment start (ms). */
+  moveStartAt: number;
+  /** Duration of current movement segment (ms). */
+  moveDuration: number;
   alive: boolean;
 }
 
@@ -241,11 +257,11 @@ export class TronBikesGame {
       this.trailMats.push(new THREE.MeshStandardMaterial({
         color: colorHex,
         emissive: colorHex,
-        emissiveIntensity: 2.0,
-        roughness: 0.08,
-        metalness: 0.85,
+        emissiveIntensity: 1.15,
+        roughness: 0.34,
+        metalness: 0.62,
         transparent: true,
-        opacity: 0.92,
+        opacity: 0.76,
       }));
     }
 
@@ -278,25 +294,18 @@ export class TronBikesGame {
     under.position.set(ARENA_HALF, -20, ARENA_HALF);
     this.scene.add(under);
 
-    // Floor
+    // Floor (oversized so the field feels unbounded from player POV)
     const W = ARENA_SIZE * CELL_SIZE;
-    const floorGeo = new THREE.PlaneGeometry(W + 4, W + 4);
+    const floorSpan = Math.max(W * 12, 1600);
+    const floorGeo = new THREE.PlaneGeometry(floorSpan, floorSpan);
     const floorMat = new THREE.MeshStandardMaterial({ color: 0x000c18, roughness: 0.98 });
     const floor = new THREE.Mesh(floorGeo, floorMat);
     floor.rotation.x = -Math.PI / 2;
     floor.position.set(ARENA_HALF, -0.02, ARENA_HALF);
     this.scene.add(floor);
 
-    // Grid lines — slightly brighter for visibility
-    const grid = new THREE.GridHelper(W, ARENA_SIZE, 0x004466, 0x001c2e);
-    grid.position.set(ARENA_HALF, 0.02, ARENA_HALF);
-    this.scene.add(grid);
-
-    // Arena border glow walls
-    this.buildBorderWalls();
-
     // Subtle arena floor glow at centre
-    const glowLight = new THREE.PointLight(0x0033aa, 1.2, W * 0.8);
+    const glowLight = new THREE.PointLight(0x0033aa, 1.2, floorSpan * 0.6);
     glowLight.position.set(ARENA_HALF, -1, ARENA_HALF);
     this.scene.add(glowLight);
 
@@ -304,9 +313,9 @@ export class TronBikesGame {
     const starCount = 700;
     const starPos = new Float32Array(starCount * 3);
     for (let i = 0; i < starCount; i++) {
-      starPos[i * 3]     = (Math.random() - 0.5) * 300;
+      starPos[i * 3]     = (Math.random() - 0.5) * 2400;
       starPos[i * 3 + 1] = Math.random() * 100 + 25;
-      starPos[i * 3 + 2] = (Math.random() - 0.5) * 300;
+      starPos[i * 3 + 2] = (Math.random() - 0.5) * 2400;
     }
     const starGeo = new THREE.BufferGeometry();
     starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
@@ -356,11 +365,11 @@ export class TronBikesGame {
     const targetRotY = DIR_TO_ROT[player.direction] ?? 0;
 
     const bodyMat = new THREE.MeshStandardMaterial({
-      color: colorHex,
+      color: 0xdbe7ff,
       emissive: colorHex,
-      emissiveIntensity: 1.1,
-      roughness: 0.15,
-      metalness: 0.7,
+      emissiveIntensity: 0.62,
+      roughness: 0.11,
+      metalness: 0.94,
     });
 
     // ── Hull: slightly lower profile than before ─────────────────────────────
@@ -398,6 +407,10 @@ export class TronBikesGame {
       targetRotY,
       prevTargetRotY: targetRotY,
       leanZ: 0,
+      startX: wx,
+      startZ: wz,
+      moveStartAt: performance.now(),
+      moveDuration: this.getMoveDurationMs(this.lobbyState.speedLevel),
       alive: true,
     });
   }
@@ -463,6 +476,12 @@ export class TronBikesGame {
 
       const wx = player.position.x * CELL_SIZE;
       const wz = player.position.z * CELL_SIZE;
+      if (wx !== mesh.targetX || wz !== mesh.targetZ) {
+        mesh.startX = mesh.group.position.x;
+        mesh.startZ = mesh.group.position.z;
+        mesh.moveStartAt = performance.now();
+        mesh.moveDuration = this.getMoveDurationMs(newState.speedLevel);
+      }
       mesh.targetX = wx;
       mesh.targetZ = wz;
       mesh.targetRotY = DIR_TO_ROT[player.direction] ?? mesh.targetRotY;
@@ -716,8 +735,8 @@ export class TronBikesGame {
   private animate = (): void => {
     this.animFrameId = requestAnimationFrame(this.animate);
     const dt = this.clock.getDelta();
+    const now = performance.now();
 
-    const posAlpha    = 1 - Math.pow(INTERP_BASE, dt * INTERP_TARGET_FPS);
     const rotAlpha    = 1 - Math.pow(ROT_INTERP_BASE, dt * INTERP_TARGET_FPS);
     const cameraAlpha = 1 - Math.pow(CAMERA_INTERP_BASE, dt * INTERP_TARGET_FPS);
     const playerById  = new Map(this.lobbyState.players.map(p => [p.id, p]));
@@ -726,12 +745,15 @@ export class TronBikesGame {
     for (const [playerId, mesh] of this.bikeMeshes) {
       if (!mesh.alive) continue;
 
-      // Position
-      mesh.group.position.x += (mesh.targetX - mesh.group.position.x) * posAlpha;
-      mesh.group.position.z += (mesh.targetZ - mesh.group.position.z) * posAlpha;
+      // Position (time-based smoothing between discrete server cells)
+      const safeMoveDuration = Math.max(MIN_MOVE_DURATION_MS, mesh.moveDuration);
+      const moveT = Math.min(1, (now - mesh.moveStartAt) / safeMoveDuration);
+      const smoothMoveT = moveT * moveT * (3 - 2 * moveT);
+      mesh.group.position.x = mesh.startX + (mesh.targetX - mesh.startX) * smoothMoveT;
+      mesh.group.position.z = mesh.startZ + (mesh.targetZ - mesh.startZ) * smoothMoveT;
       const player = playerById.get(playerId);
       const jumpY = player?.isJumping ? 0.65 : 0;
-      mesh.group.position.y += (jumpY - mesh.group.position.y) * Math.min(1, posAlpha * 2.4);
+      mesh.group.position.y += (jumpY - mesh.group.position.y) * Math.min(1, dt * 12);
 
       // Rotation (Y) — shortest path to avoid spinning the wrong way
       const rotDelta = shortestAngleDelta(mesh.group.rotation.y, mesh.targetRotY);
@@ -850,8 +872,9 @@ export class TronBikesGame {
           const sides: Array<[number, number]> = (dir === 'N' || dir === 'S')
             ? [[x - 1, z], [x + 1, z]]
             : [[x, z - 1], [x, z + 1]];
-          for (const [nx, nz] of sides) {
-            if (nx < 0 || nx >= ARENA_SIZE || nz < 0 || nz >= ARENA_SIZE) continue;
+          for (const [sx, sz] of sides) {
+            const nx = (sx + ARENA_SIZE) % ARENA_SIZE;
+            const nz = (sz + ARENA_SIZE) % ARENA_SIZE;
             const cell = this.lobbyState.trail[nx]?.[nz] ?? 0;
             if (cell !== 0 && cell !== myColorIdx) {
               this.lastNearMissTime = nowMs;
@@ -879,6 +902,12 @@ export class TronBikesGame {
     this.sendInput();
     this.composer.render();
   };
+
+  private getMoveDurationMs(speedLevel: number): number {
+    const level = Math.max(0, Math.min(speedLevel, SPEED_MOVE_TICKS.length - 1));
+    const ms = SPEED_MOVE_TICKS[level] * TICK_RATE;
+    return Math.max(MIN_SEGMENT_DURATION_MS, ms);
+  }
 
   // ─── Cleanup ─────────────────────────────────────────────────────────────────
 
@@ -914,4 +943,3 @@ export class TronBikesGame {
     this.renderer.dispose();
   }
 }
-

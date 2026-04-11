@@ -62,6 +62,7 @@ const SPEED_FOV = [55, 62, 70, 80] as const;
 /** Bloom intensity to restore to (base) and what to spike to on speed-up. */
 const BLOOM_BASE = 3.2;
 const BLOOM_SPIKE = 9.0;
+const BLOOM_DECAY_RATE = 5;
 
 /** Bike lean (bank) constants. */
 const LEAN_MAX = 0.38;   // radians (~22°)
@@ -75,6 +76,25 @@ const TRAIL_FLASH_CAP       = 4;    // max concurrent flash lights (WebGL budget
 
 /** Near-miss detection throttle (ms). */
 const NEAR_MISS_COOLDOWN_MS = 300;
+
+/** Power-up animation constants. */
+const POWERUP_ROTATION_SPEED    = 2.8;
+const POWERUP_GEOMETRY_DETAIL   = 0;
+
+/** FOV interpolation rate (per second). */
+const FOV_INTERP_RATE = 2.5;
+
+/** Spectator camera constants. */
+const SPECTATOR_ORBIT_SPEED     = 0.07;
+const SPECTATOR_ORBIT_RADIUS_MULT = 0.7;
+const SPECTATOR_CAMERA_INTERP   = 0.012;
+
+/** Minimap rendering constants. */
+const MINIMAP_CELL_OVERLAP        = 0.5;  // prevents sub-pixel gaps between cells
+const MINIMAP_POWERUP_HALF_SIZE   = 1.5;
+const MINIMAP_POWERUP_SIZE        = 3;
+const MINIMAP_MY_PLAYER_RADIUS    = 3.5;
+const MINIMAP_OTHER_PLAYER_RADIUS = 2.2;
 
 /** Map direction → Y rotation (radians) for bike mesh. */
 const DIR_TO_ROT: Record<Direction, number> = {
@@ -565,7 +585,7 @@ export class TronBikesGame {
     for (const powerUp of powerUps) {
       if (this.powerUpMeshes.has(powerUp.id)) continue;
       const isBoost = powerUp.type === 'boost';
-      const geo = new THREE.OctahedronGeometry(CELL_SIZE * POWERUP_SIZE_RATIO, 0);
+      const geo = new THREE.OctahedronGeometry(CELL_SIZE * POWERUP_SIZE_RATIO, POWERUP_GEOMETRY_DETAIL);
       const mat = new THREE.MeshStandardMaterial({
         color:    isBoost ? 0xffcc00 : 0xff66ff,
         emissive: isBoost ? 0xffaa00 : 0xff22ee,
@@ -648,7 +668,7 @@ export class TronBikesGame {
         if (!t) continue;
         const colorName = PLAYER_COLORS[t - 1];
         ctx.fillStyle = MINIMAP_COLORS[colorName] ?? '#ffffff';
-        ctx.fillRect(x * scale, z * scale, scale + 0.5, scale + 0.5);
+        ctx.fillRect(x * scale, z * scale, scale + MINIMAP_CELL_OVERLAP, scale + MINIMAP_CELL_OVERLAP);
       }
     }
 
@@ -657,7 +677,7 @@ export class TronBikesGame {
       ctx.fillStyle = pu.type === 'boost' ? '#ffcc00' : '#ff66ff';
       const cx = pu.position.x * scale + scale * 0.5;
       const cz = pu.position.z * scale + scale * 0.5;
-      ctx.fillRect(cx - 1.5, cz - 1.5, 3, 3);
+      ctx.fillRect(cx - MINIMAP_POWERUP_HALF_SIZE, cz - MINIMAP_POWERUP_HALF_SIZE, MINIMAP_POWERUP_SIZE, MINIMAP_POWERUP_SIZE);
     }
 
     // Players
@@ -667,7 +687,7 @@ export class TronBikesGame {
       ctx.fillStyle = MINIMAP_COLORS[player.color] ?? '#ffffff';
       const px = player.position.x * scale + scale * 0.5;
       const pz = player.position.z * scale + scale * 0.5;
-      const r = isMe ? 3.5 : 2.2;
+      const r = isMe ? MINIMAP_MY_PLAYER_RADIUS : MINIMAP_OTHER_PLAYER_RADIUS;
       ctx.beginPath();
       ctx.arc(px, pz, r, 0, Math.PI * 2);
       ctx.fill();
@@ -764,7 +784,7 @@ export class TronBikesGame {
     // ── Power-up float / spin ──────────────────────────────────────────────
     const t = performance.now() * 0.001;
     for (const mesh of this.powerUpMeshes.values()) {
-      mesh.rotation.y += dt * 2.8;
+      mesh.rotation.y += dt * POWERUP_ROTATION_SPEED;
       mesh.position.y = POWERUP_BASE_HEIGHT + Math.sin(
         t * POWERUP_FLOAT_SPEED +
         mesh.position.x * POWERUP_FLOAT_PHASE_SCALE +
@@ -774,13 +794,13 @@ export class TronBikesGame {
 
     // ── Bloom decay after speed-up spike ──────────────────────────────────
     if (this.bloomEffect.intensity > BLOOM_BASE) {
-      this.bloomEffect.intensity += (BLOOM_BASE - this.bloomEffect.intensity) * Math.min(1, dt * 5);
+      this.bloomEffect.intensity += (BLOOM_BASE - this.bloomEffect.intensity) * Math.min(1, dt * BLOOM_DECAY_RATE);
     }
 
     // ── FOV interpolation ─────────────────────────────────────────────────
     const speedLevel = Math.min(this.lobbyState.speedLevel, SPEED_FOV.length - 1);
     const targetFov = SPEED_FOV[speedLevel];
-    this.currentFov += (targetFov - this.currentFov) * Math.min(1, dt * 2.5);
+    this.currentFov += (targetFov - this.currentFov) * Math.min(1, dt * FOV_INTERP_RATE);
     if (Math.abs(this.currentFov - this.camera.fov) > 0.05) {
       this.camera.fov = this.currentFov;
       this.camera.updateProjectionMatrix();
@@ -844,14 +864,14 @@ export class TronBikesGame {
       }
     } else {
       // Spectator: slowly orbit top-down so eliminated players can watch
-      const orbitT = t * 0.07;
-      const orbitR = ARENA_HALF * 0.7;
+      const orbitT = t * SPECTATOR_ORBIT_SPEED;
+      const orbitR = ARENA_HALF * SPECTATOR_ORBIT_RADIUS_MULT;
       const spectX = ARENA_HALF + Math.cos(orbitT) * orbitR;
       const spectY = ARENA_HALF * 1.4;
       const spectZ = ARENA_HALF + Math.sin(orbitT) * orbitR;
-      this.camera.position.x += (spectX - this.camera.position.x) * 0.012;
-      this.camera.position.y += (spectY - this.camera.position.y) * 0.012;
-      this.camera.position.z += (spectZ - this.camera.position.z) * 0.012;
+      this.camera.position.x += (spectX - this.camera.position.x) * SPECTATOR_CAMERA_INTERP;
+      this.camera.position.y += (spectY - this.camera.position.y) * SPECTATOR_CAMERA_INTERP;
+      this.camera.position.z += (spectZ - this.camera.position.z) * SPECTATOR_CAMERA_INTERP;
       this.camera.lookAt(ARENA_HALF, 0, ARENA_HALF);
     }
 

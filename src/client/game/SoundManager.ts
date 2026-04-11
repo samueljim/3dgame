@@ -294,6 +294,68 @@ export class SoundManager {
     osc.stop(now + 0.15);
   }
 
+  /** Short electric click/snap when the bike turns. */
+  playTurn(): void {
+    const ac = this.ac;
+    const now = ac.currentTime;
+    const bufSize = Math.floor(ac.sampleRate * 0.04);
+    const buf = ac.createBuffer(1, bufSize, ac.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / bufSize);
+    const src = ac.createBufferSource();
+    src.buffer = buf;
+    const hp = ac.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.value = 2200;
+    const gain = ac.createGain();
+    gain.gain.setValueAtTime(0.22, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
+    src.connect(hp);
+    hp.connect(gain);
+    gain.connect(this.mg);
+    src.start(now);
+  }
+
+  /** Rising synth burst on speed level-up. */
+  playSpeedUp(): void {
+    const ac = this.ac;
+    const now = ac.currentTime;
+    const osc = ac.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(180, now);
+    osc.frequency.exponentialRampToValueAtTime(1600, now + 0.32);
+    const filter = ac.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.value = 900;
+    filter.Q.value = 1.8;
+    const gain = ac.createGain();
+    gain.gain.setValueAtTime(0.0, now);
+    gain.gain.linearRampToValueAtTime(0.38, now + 0.05);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.42);
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.mg);
+    osc.start(now);
+    osc.stop(now + 0.42);
+  }
+
+  /** Quick descending electric whoosh for near-miss. */
+  playNearMiss(): void {
+    const ac = this.ac;
+    const now = ac.currentTime;
+    const osc = ac.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(1400, now);
+    osc.frequency.exponentialRampToValueAtTime(180, now + 0.14);
+    const gain = ac.createGain();
+    gain.gain.setValueAtTime(0.16, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.14);
+    osc.connect(gain);
+    gain.connect(this.mg);
+    osc.start(now);
+    osc.stop(now + 0.14);
+  }
+
   startMusic(url: string): void {
     if (this.musicElement) return;
     const audio = new Audio(url);

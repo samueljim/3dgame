@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { gsap } from 'gsap';
-import { NeonFallGame } from '../game/NeonFall';
+import { TronBikesGame } from '../game/TronBikes';
 import { SoundManager } from '../game/SoundManager';
 import type { LobbyState, ServerMessage } from '@shared/types';
-import { DASH_COOLDOWN_MS, MAX_ROUNDS, BLAST_COOLDOWN_MS } from '@shared/types';
+import { MAX_ROUNDS, SPEED_LEVEL_THRESHOLDS } from '@shared/types';
 import musicUrl from './music.mp3';
 
 interface GameCanvasProps {
@@ -13,31 +13,23 @@ interface GameCanvasProps {
   onGameOver: () => void;
 }
 
-const DASH_MAX_COOLDOWN = DASH_COOLDOWN_MS;
-const BLAST_MAX_COOLDOWN = BLAST_COOLDOWN_MS;
-
 export default function GameCanvas({ lobbyState: initialState, playerId, ws, onGameOver }: GameCanvasProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const gameRef = useRef<NeonFallGame | null>(null);
-  const soundRef = useRef<SoundManager>(new SoundManager());
-  const countdownRef = useRef<HTMLDivElement>(null);
+  const canvasRef   = useRef<HTMLCanvasElement>(null);
+  const gameRef     = useRef<TronBikesGame | null>(null);
+  const soundRef    = useRef<SoundManager>(new SoundManager());
+  const countdownRef    = useRef<HTMLDivElement>(null);
   const countdownNumRef = useRef<HTMLDivElement>(null);
-  const joystickRef = useRef<HTMLDivElement>(null);
+  const joystickRef      = useRef<HTMLDivElement>(null);
   const joystickThumbRef = useRef<HTMLDivElement>(null);
 
   const [currentState, setCurrentState] = useState(initialState);
-  const [gameOver, setGameOver] = useState(false);
+  const [gameOver, setGameOver]         = useState(false);
   const [showElimination, setShowElimination] = useState('');
-  const [isMuted, setIsMuted] = useState(false);
+  const [isMuted, setIsMuted]           = useState(false);
   const [countdownVisible, setCountdownVisible] = useState(false);
 
   const touchState = useRef({
-    active: false,
-    touchId: -1,
-    startX: 0,
-    startY: 0,
-    dx: 0,
-    dy: 0,
+    active: false, touchId: -1, startX: 0, startY: 0, dx: 0, dy: 0,
   });
 
   const showCountdownNumber = useCallback((text: string, color: string, duration: number) => {
@@ -47,7 +39,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     el.style.color = color;
     gsap.fromTo(el,
       { scale: 2, opacity: 1 },
-      { scale: 0.5, opacity: 0, duration, ease: 'power2.in' }
+      { scale: 0.5, opacity: 0, duration, ease: 'power2.in' },
     );
   }, []);
 
@@ -77,14 +69,13 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     if (!canvasRef.current) return;
     const sound = soundRef.current;
 
-    const game = new NeonFallGame(canvasRef.current, ws, playerId, initialState, sound);
+    const game = new TronBikesGame(canvasRef.current, ws, playerId, initialState, sound);
     gameRef.current = game;
     sound.startAmbient();
     sound.startMusic(musicUrl);
 
     const handleMessage = (event: MessageEvent) => {
       const msg: ServerMessage = JSON.parse(event.data);
-
       if (msg.type === 'game_state') {
         setCurrentState(msg.lobbyState);
         game.updateState(msg.lobbyState);
@@ -92,7 +83,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
           runCountdown(msg.lobbyState.countdown);
         }
       } else if (msg.type === 'player_eliminated') {
-        const notification = `${msg.playerName} fell through the floor!`;
+        const notification = `${msg.playerName} crashed!`;
         setShowElimination(notification);
         game.notifyElimination(msg.playerName);
         setTimeout(() => setShowElimination(''), 3000);
@@ -104,7 +95,6 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     };
 
     ws.addEventListener('message', handleMessage);
-
     return () => {
       ws.removeEventListener('message', handleMessage);
       game.destroy();
@@ -113,16 +103,15 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     };
   }, []);
 
+  // ─── Mobile joystick ──────────────────────────────────────────────────────
+
   const handleJoystickStart = useCallback((e: React.TouchEvent) => {
     soundRef.current.init();
     const touch = e.changedTouches[0];
     const ts = touchState.current;
-    ts.active = true;
-    ts.touchId = touch.identifier;
-    ts.startX = touch.clientX;
-    ts.startY = touch.clientY;
-    ts.dx = 0;
-    ts.dy = 0;
+    ts.active = true; ts.touchId = touch.identifier;
+    ts.startX = touch.clientX; ts.startY = touch.clientY;
+    ts.dx = 0; ts.dy = 0;
   }, []);
 
   const handleJoystickMove = useCallback((e: React.TouchEvent) => {
@@ -131,64 +120,33 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     if (!ts.active) return;
     for (let i = 0; i < e.changedTouches.length; i++) {
       const touch = e.changedTouches[i];
-      if (touch.identifier === ts.touchId) {
-        const dx = touch.clientX - ts.startX;
-        const dy = touch.clientY - ts.startY;
-        const maxR = 40;
-        ts.dx = Math.max(-maxR, Math.min(maxR, dx));
-        ts.dy = Math.max(-maxR, Math.min(maxR, dy));
-
-        const thumb = joystickThumbRef.current;
-        if (thumb) {
-          thumb.style.transform = `translate(${ts.dx}px, ${ts.dy}px)`;
-        }
-
-        const game = gameRef.current;
-        if (game) {
-          const threshold = 10;
-          game.setKeys({
-            w: ts.dy < -threshold,
-            s: ts.dy > threshold,
-            a: ts.dx < -threshold,
-            d: ts.dx > threshold,
-          });
-        }
-        break;
+      if (touch.identifier !== ts.touchId) continue;
+      const dx = touch.clientX - ts.startX;
+      const dy = touch.clientY - ts.startY;
+      const maxR = 40;
+      ts.dx = Math.max(-maxR, Math.min(maxR, dx));
+      ts.dy = Math.max(-maxR, Math.min(maxR, dy));
+      const thumb = joystickThumbRef.current;
+      if (thumb) thumb.style.transform = `translate(${ts.dx}px, ${ts.dy}px)`;
+      const game = gameRef.current;
+      if (game) {
+        const thr = 12;
+        game.setKeys({ w: ts.dy < -thr, s: ts.dy > thr, a: ts.dx < -thr, d: ts.dx > thr });
       }
+      break;
     }
   }, []);
 
   const handleJoystickEnd = useCallback((e: React.TouchEvent) => {
     const ts = touchState.current;
     for (let i = 0; i < e.changedTouches.length; i++) {
-      if (e.changedTouches[i].identifier === ts.touchId) {
-        ts.active = false;
-        ts.dx = 0;
-        ts.dy = 0;
-        const thumb = joystickThumbRef.current;
-        if (thumb) thumb.style.transform = 'translate(0px, 0px)';
-        gameRef.current?.setKeys({ w: false, s: false, a: false, d: false });
-        break;
-      }
+      if (e.changedTouches[i].identifier !== ts.touchId) continue;
+      ts.active = false; ts.dx = 0; ts.dy = 0;
+      const thumb = joystickThumbRef.current;
+      if (thumb) thumb.style.transform = 'translate(0px, 0px)';
+      gameRef.current?.setKeys({ w: false, s: false, a: false, d: false });
+      break;
     }
-  }, []);
-
-  const handleDashPress = useCallback(() => {
-    soundRef.current.init();
-    gameRef.current?.setKeys({ space: true });
-  }, []);
-
-  const handleDashRelease = useCallback(() => {
-    gameRef.current?.setKeys({ space: false });
-  }, []);
-
-  const handleBlastPress = useCallback(() => {
-    soundRef.current.init();
-    gameRef.current?.setKeys({ shift: true });
-  }, []);
-
-  const handleBlastRelease = useCallback(() => {
-    gameRef.current?.setKeys({ shift: false });
   }, []);
 
   const handleMuteToggle = useCallback(() => {
@@ -203,48 +161,41 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     }
   }, [ws]);
 
+  // ─── Derived display values ────────────────────────────────────────────────
+
   const myPlayer = currentState.players.find(p => p.id === playerId);
   const alivePlayers = currentState.players.filter(p => p.isAlive);
   const minutes = Math.floor(currentState.gameTime / 60);
   const seconds = Math.floor(currentState.gameTime % 60);
 
-  const nextFallMs = currentState.nextTileFallIn;
-  const fallWarningClass = nextFallMs < 1000 ? 'urgent' : nextFallMs < 2500 ? 'warning' : 'safe';
+  const speedLevel = currentState.speedLevel ?? 0;
+  const speedLabels = ['SLOW', 'NORMAL', 'FAST', '⚡ MAX'];
+  const speedColors = ['#44ffee', '#ffee44', '#ff9944', '#ff3333'];
+  // seconds until next speed-up (null if already at max)
+  const nextSpeedThreshold = SPEED_LEVEL_THRESHOLDS[speedLevel + 1] ?? null;
+  const secUntilSpeedup = nextSpeedThreshold !== null
+    ? Math.max(0, Math.ceil(nextSpeedThreshold - currentState.gameTime))
+    : null;
 
   const colorDotClass: Record<string, string> = {
-    red: 'hud-dot-red',
-    green: 'hud-dot-green',
-    yellow: 'hud-dot-yellow',
-    purple: 'hud-dot-purple',
-    blue: 'hud-dot-blue',
-    cyan: 'hud-dot-cyan',
-    orange: 'hud-dot-orange',
-    pink: 'hud-dot-pink',
+    red: 'hud-dot-red', green: 'hud-dot-green', yellow: 'hud-dot-yellow',
+    purple: 'hud-dot-purple', blue: 'hud-dot-blue', cyan: 'hud-dot-cyan',
+    orange: 'hud-dot-orange', pink: 'hud-dot-pink',
   };
 
   const colorTextStyle: Record<string, string> = {
-    red: '#ff4444',
-    green: '#44ff44',
-    yellow: '#ffff44',
-    purple: '#aa44ff',
-    blue: '#4477ff',
-    cyan: '#44ffee',
-    orange: '#ff9944',
-    pink: '#ff44bb',
+    red: '#ff4444', green: '#44ff44', yellow: '#ffff44', purple: '#aa44ff',
+    blue: '#4477ff', cyan: '#44ffee', orange: '#ff9944', pink: '#ff44bb',
   };
 
   const winnerPlayer = currentState.winner
-    ? currentState.players.find(p => p.id === currentState.winner)
-    : null;
-
+    ? currentState.players.find(p => p.id === currentState.winner) : null;
   const roundWinnerPlayer = currentState.roundWinnerId
-    ? currentState.players.find(p => p.id === currentState.roundWinnerId)
-    : null;
-
+    ? currentState.players.find(p => p.id === currentState.roundWinnerId) : null;
   const isRoundOver = currentState.status === 'round_over';
-  // Use client-side MAX_ROUNDS as the hard cap for star display to avoid repeat() with server-provided lengths
-  const STAR_COUNT = Math.ceil(MAX_ROUNDS / 2); // always ≤ 3 based on the constant
-  const maxWins = STAR_COUNT;
+  const STAR_COUNT = Math.ceil(MAX_ROUNDS / 2);
+
+  const dirLabel: Record<string, string> = { N: '↑', S: '↓', E: '→', W: '←' };
 
   return (
     <div className="game-wrapper">
@@ -260,55 +211,33 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
       {/* HUD */}
       <div className="game-hud">
         <div className="hud-players">
-          {/* Round indicator */}
           {currentState.currentRound > 0 && (
             <div className="hud-round-badge">
               Round {currentState.currentRound}/{currentState.maxRounds ?? MAX_ROUNDS}
             </div>
           )}
           {currentState.players.map(player => {
-            const cooldownPct = player.dashCooldown
-              ? Math.max(0, Math.min(1, player.dashCooldown / DASH_MAX_COOLDOWN))
-              : 0;
-            const blastCooldownPct = player.blastCooldown
-              ? Math.max(0, Math.min(1, player.blastCooldown / BLAST_MAX_COOLDOWN))
-              : 0;
-            const playerWins = currentState.roundScores?.[player.id] ?? 0;
+            const wins = currentState.roundScores?.[player.id] ?? 0;
             return (
               <div key={player.id} className={`hud-player ${!player.isAlive ? 'eliminated' : ''}`}>
                 <div className={`hud-dot ${colorDotClass[player.color]}`} />
                 <div className="hud-player-info">
                   <div className="hud-player-name-row">
                     <span>{player.name}</span>
-                    {player.id === playerId && <span style={{ color: 'rgba(200,200,255,0.5)', fontSize: '0.7rem' }}>(you)</span>}
+                    {player.id === playerId && (
+                      <span style={{ color: 'rgba(200,200,255,0.5)', fontSize: '0.7rem' }}>(you)</span>
+                    )}
                     {currentState.currentRound > 0 && (
                       <span className="hud-wins" title="Round wins">
-                        {Array.from({ length: STAR_COUNT }, (_, i) => i < playerWins ? '★' : '☆').join('')}
+                        {Array.from({ length: STAR_COUNT }, (_, i) => i < wins ? '★' : '☆').join('')}
+                      </span>
+                    )}
+                    {player.id === playerId && player.isAlive && (
+                      <span style={{ color: colorTextStyle[player.color], fontSize: '0.8rem', marginLeft: '0.3rem' }}>
+                        {dirLabel[player.direction] ?? ''}
                       </span>
                     )}
                   </div>
-                  {player.id === playerId && (
-                    <div className="hud-ability-bars">
-                      <div className="hud-ability-bar-row">
-                        <span className="hud-ability-label">DASH</span>
-                        <div className="hud-dash-bar">
-                          <div
-                            className="hud-dash-fill"
-                            style={{ width: `${(1 - cooldownPct) * 100}%` }}
-                          />
-                        </div>
-                      </div>
-                      <div className="hud-ability-bar-row">
-                        <span className="hud-ability-label">BLAST</span>
-                        <div className="hud-blast-bar">
-                          <div
-                            className="hud-blast-fill"
-                            style={{ width: `${(1 - blastCooldownPct) * 100}%` }}
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  )}
                 </div>
               </div>
             );
@@ -317,32 +246,41 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
 
         <div className="hud-timer">
           <div className="hud-time">{String(minutes).padStart(2, '0')}:{String(seconds).padStart(2, '0')}</div>
-          <div className={`hud-tile-warning ${fallWarningClass}`}>
-            {fallWarningClass === 'urgent'
-              ? '⚠ TILES FALLING!'
-              : fallWarningClass === 'warning'
-              ? `Tiles fall in ${(nextFallMs / 1000).toFixed(1)}s`
-              : `Next fall: ${(nextFallMs / 1000).toFixed(1)}s`}
+          {/* Speed level badge */}
+          <div style={{
+            marginTop: '0.35rem',
+            padding: '0.15rem 0.45rem',
+            borderRadius: '4px',
+            background: 'rgba(0,0,0,0.5)',
+            border: `1px solid ${speedColors[speedLevel]}`,
+            color: speedColors[speedLevel],
+            fontSize: '0.72rem',
+            fontWeight: 700,
+            letterSpacing: '0.08em',
+            textAlign: 'center',
+          }}>
+            {speedLabels[speedLevel]}
+            {secUntilSpeedup !== null && secUntilSpeedup > 0 && (
+              <span style={{ opacity: 0.65, fontWeight: 400, marginLeft: '0.3rem' }}>
+                +{secUntilSpeedup}s
+              </span>
+            )}
           </div>
-          <div style={{ fontSize: '0.7rem', marginTop: '0.2rem', color: 'rgba(200,200,255,0.4)' }}>
+          <div style={{ fontSize: '0.7rem', marginTop: '0.3rem', color: 'rgba(200,200,255,0.4)' }}>
             {alivePlayers.length} alive
           </div>
         </div>
 
         <div className="hud-right">
-          <button
-            className="mute-btn"
-            onClick={handleMuteToggle}
-            title={isMuted ? 'Unmute' : 'Mute'}
-          >
-            {isMuted ? '🔇' : '🔊'}
+          <button className="mute-btn" onClick={handleMuteToggle} title={isMuted ? 'Unmute' : 'Mute'}>
+            {isMuted ? '��' : '🔊'}
           </button>
           <div className="hud-controls">
             <div className="controls-title">Controls</div>
-            WASD / Arrows — Move<br />
-            Space — Dash<br />
-            Shift — Blast<br />
-            <span style={{ color: 'rgba(255,180,80,0.7)', fontSize: '0.65rem' }}>Walk on tiles to break them!</span>
+            WASD / Arrows — Steer<br />
+            <span style={{ color: 'rgba(255,180,80,0.7)', fontSize: '0.65rem' }}>
+              Don't crash into walls or trails!
+            </span>
           </div>
         </div>
       </div>
@@ -359,24 +297,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
         >
           <div className="joystick-thumb" ref={joystickThumbRef} />
         </div>
-        <div className="mobile-action-btns">
-          <button
-            className="blast-btn"
-            onTouchStart={handleBlastPress}
-            onTouchEnd={handleBlastRelease}
-            onTouchCancel={handleBlastRelease}
-          >
-            BLAST
-          </button>
-          <button
-            className="dash-btn"
-            onTouchStart={handleDashPress}
-            onTouchEnd={handleDashRelease}
-            onTouchCancel={handleDashRelease}
-          >
-            DASH
-          </button>
-        </div>
+        <div className="mobile-action-btns" style={{ minWidth: '70px' }} />
       </div>
 
       {showElimination && (
@@ -410,9 +331,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
               );
             })}
           </div>
-          <div className="overlay-subtitle" style={{ marginTop: '1rem' }}>
-            Next round starting soon…
-          </div>
+          <div className="overlay-subtitle" style={{ marginTop: '1rem' }}>Next round starting soon…</div>
         </div>
       )}
 
@@ -426,9 +345,8 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
               🥇 {winnerPlayer.name} wins the match!
             </div>
           ) : (
-            <div className="overlay-subtitle">Everyone fell off!</div>
+            <div className="overlay-subtitle">All bikes crashed!</div>
           )}
-          {/* Final scoreboard */}
           <div className="round-scores">
             {[...currentState.players]
               .sort((a, b) => (currentState.roundScores?.[b.id] ?? 0) - (currentState.roundScores?.[a.id] ?? 0))
@@ -450,13 +368,9 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
           </div>
           <div className="overlay-buttons">
             {myPlayer?.isHost && (
-              <button className="btn btn-secondary" onClick={handleRestartGame}>
-                🔄 Play Again
-              </button>
+              <button className="btn btn-secondary" onClick={handleRestartGame}>🔄 Play Again</button>
             )}
-            <button className="btn btn-primary" onClick={onGameOver}>
-              ← Back to Lobby
-            </button>
+            <button className="btn btn-primary" onClick={onGameOver}>← Back to Lobby</button>
           </div>
         </div>
       )}

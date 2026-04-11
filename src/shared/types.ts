@@ -2,6 +2,9 @@ export type PlayerColor = 'red' | 'green' | 'yellow' | 'purple' | 'blue' | 'cyan
 
 export const PLAYER_COLORS: PlayerColor[] = ['red', 'green', 'yellow', 'purple', 'blue', 'cyan', 'orange', 'pink'];
 
+/** Cardinal direction the bike is heading. */
+export type Direction = 'N' | 'S' | 'E' | 'W';
+
 export interface Player {
   id: string;
   name: string;
@@ -9,25 +12,9 @@ export interface Player {
   isHost: boolean;
   isReady: boolean;
   isAlive: boolean;
-  position: { x: number; z: number }; // grid position
+  position: { x: number; z: number }; // grid cell position
+  direction: Direction;
   score: number;
-  dashCooldown?: number;
-  blastCooldown?: number;
-  blastActive?: boolean; // true for one server tick when blast fires
-}
-
-export interface GravityWell {
-  id: string;
-  position: { x: number; z: number }; // world position
-  velocity: { x: number; z: number };
-  radius: number; // visual radius
-}
-
-export interface TileState {
-  x: number;
-  z: number;
-  state: 'solid' | 'crumbling' | 'fallen';
-  fallTimer?: number; // ms until fall
 }
 
 export type LobbyStatus = 'waiting' | 'playing' | 'round_over' | 'finished';
@@ -36,12 +23,16 @@ export interface LobbyState {
   lobbyId: string;
   players: Player[];
   status: LobbyStatus;
-  tiles: TileState[][];    // 10x10 grid
-  gameTime: number;        // seconds elapsed
-  winner: string | null;   // player id (final match winner)
-  nextTileFallIn: number;  // ms
+  /**
+   * trail[x][z]:
+   *   0  = empty cell
+   *   1–8 = PLAYER_COLORS index + 1 of the bike whose wall occupies this cell
+   */
+  trail: number[][];
+  gameTime: number;      // seconds elapsed
+  winner: string | null; // player id (final match winner)
   countdown?: number;
-  gravityWells: GravityWell[];
+  speedLevel: number;    // 0–3, increases over time; drives bike move frequency
   // multi-round fields
   currentRound: number;
   maxRounds: number;
@@ -69,23 +60,19 @@ export type ServerMessage =
   | { type: 'error'; message: string }
   | { type: 'pong' };
 
-export const ARENA_SIZE = 20;
-export const TILE_SIZE = 2; // world units per tile
-export const PLAYER_SPEED = 0.12; // tiles per tick
-export const DASH_FORCE = 3.0;
-export const TICK_RATE = 50; // ms
-export const TILE_FALL_INTERVAL = 9000; // ms between random tile falls
-export const TILES_PER_FALL = 3;
-export const TILE_CRUMBLE_WARNING = 1500; // ms warning before random tile falls
-export const TILE_PLAYER_CRUMBLE_DELAY = 700; // ms before a player-stepped tile falls
-export const DASH_COOLDOWN_MS = 1200;
-export const MAX_ROUNDS = 5; // first to win ceil(MAX_ROUNDS/2) rounds wins the match
+export const ARENA_SIZE = 40;          // grid cells per side
+export const CELL_SIZE = 1.5;          // world units per grid cell
+export const TICK_RATE = 50;           // ms per game-loop tick
+export const MAX_ROUNDS = 5;           // first to win ceil(MAX_ROUNDS/2) rounds wins the match
 export const MAX_PLAYERS = 8;
-export const BLAST_COOLDOWN_MS = 2500;
-export const BLAST_FORCE = 2.8;
-export const BLAST_RADIUS = 2.8;
-export const GRAVITY_WELL_PULL = 0.018;
-export const GRAVITY_WELL_INFLUENCE_RADIUS = 3.5;
 
-// No impassable wall cells — open Spleef floor.
-export const WALL_CELLS: Array<{ x: number; z: number }> = [];
+/**
+ * Speed schedule: bikes advance once every SPEED_MOVE_TICKS[level] ticks.
+ * Level 0 = SLOW (start), level 1 = NORMAL, level 2 = FAST, level 3 = MAX speed.
+ * At TICK_RATE = 50ms: SLOW=200ms/move, NORMAL=150ms, FAST=100ms, MAX=50ms.
+ * Index:                   0             1              2            3
+ */
+export const SPEED_MOVE_TICKS = [4, 3, 2, 1] as const;
+
+/** Game-time thresholds (seconds) at which the speed advances to the next level. */
+export const SPEED_LEVEL_THRESHOLDS = [0, 20, 45, 75] as const;

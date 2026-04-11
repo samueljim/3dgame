@@ -1,24 +1,36 @@
 import type {
-  LobbyState, Player, TileState, ClientMessage, ServerMessage,
-  PlayerColor, GravityWell
+  LobbyState, Player, ClientMessage, ServerMessage,
+  PlayerColor, Direction,
 } from '../shared/types';
 import {
-  PLAYER_COLORS, ARENA_SIZE, PLAYER_SPEED, DASH_FORCE,
-  TICK_RATE, TILES_PER_FALL, TILE_CRUMBLE_WARNING, TILE_PLAYER_CRUMBLE_DELAY, DASH_COOLDOWN_MS,
-  MAX_ROUNDS, MAX_PLAYERS, BLAST_COOLDOWN_MS, BLAST_FORCE, BLAST_RADIUS,
-  GRAVITY_WELL_PULL, GRAVITY_WELL_INFLUENCE_RADIUS, WALL_CELLS
+  PLAYER_COLORS, ARENA_SIZE, TICK_RATE,
+  SPEED_MOVE_TICKS, SPEED_LEVEL_THRESHOLDS,
+  MAX_ROUNDS, MAX_PLAYERS,
 } from '../shared/types';
+
+// Opposite directions — used to prevent immediate reversals
+const DIRECTION_OPPOSITES: Record<Direction, Direction> = { N: 'S', S: 'N', E: 'W', W: 'E' };
+
+// Start positions & facing directions for up to 8 players
+const START_CONFIGS: Array<{ x: number; z: number; dir: Direction }> = [
+  { x: 2,  z: 20, dir: 'E' },
+  { x: 37, z: 20, dir: 'W' },
+  { x: 20, z: 2,  dir: 'S' },
+  { x: 20, z: 37, dir: 'N' },
+  { x: 2,  z: 8,  dir: 'E' },
+  { x: 37, z: 8,  dir: 'W' },
+  { x: 2,  z: 31, dir: 'E' },
+  { x: 37, z: 31, dir: 'W' },
+];
 
 interface PlayerSession {
   ws: WebSocket;
   playerId: string;
+  colorIndex: number; // 0-based index into PLAYER_COLORS; stored as colorIndex+1 in the trail array
   keys: { w: boolean; a: boolean; s: boolean; d: boolean; space: boolean; shift: boolean };
-  worldPos: { x: number; z: number }; // float world position
-  velocity: { x: number; z: number };
-  dashCooldown: number; // ms
-  isDashing: boolean;   // true during active dash (for collision boost)
-  dashActiveTimer: number; // ms remaining of dash-boost window
-  blastCooldown: number; // ms
+  /** Buffered next turn — set immediately when a direction key is received so quick
+   *  taps between move ticks are never lost. Consumed on the next move tick. */
+  pendingDirection: Direction | null;
 }
 
 export class GameLobby {
@@ -27,10 +39,8 @@ export class GameLobby {
   private lobbyState: LobbyState;
   private gameInterval: ReturnType<typeof setInterval> | null = null;
   private lobbyId: string = '';
-  private fallCount: number = 0;
   private countdownTimeouts: ReturnType<typeof setTimeout>[] = [];
-  // Fast lookup: "x,z" → true for every impassable wall cell
-  private readonly wallSet: Set<string> = new Set(WALL_CELLS.map(w => `${w.x},${w.z}`));
+  private moveTickCounter = 0;
 
   constructor(state: DurableObjectState) {
     this.state = state;
@@ -42,11 +52,10 @@ export class GameLobby {
       lobbyId: this.lobbyId,
       players: [],
       status: 'waiting',
-      tiles: this.initTiles(),
+      trail: this.initTrail(),
       gameTime: 0,
       winner: null,
-      nextTileFallIn: 7000,
-      gravityWells: [],
+      speedLevel: 0,
       currentRound: 0,
       maxRounds: MAX_ROUNDS,
       roundScores: {},
@@ -54,15 +63,8 @@ export class GameLobby {
     };
   }
 
-  private initTiles(): TileState[][] {
-    const tiles: TileState[][] = [];
-    for (let x = 0; x < ARENA_SIZE; x++) {
-      tiles[x] = [];
-      for (let z = 0; z < ARENA_SIZE; z++) {
-        tiles[x][z] = { x, z, state: 'solid' };
-      }
-    }
-    return tiles;
+  private initTrail(): number[][] {
+    return Array.from({ length: ARENA_SIZE }, () => new Array<number>(ARENA_SIZE).fill(0));
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -78,10 +80,7 @@ export class GameLobby {
     const [client, server] = Object.values(pair);
     this.handleWebSocket(server as WebSocket);
 
-    return new Response(null, {
-      status: 101,
-      webSocket: client as WebSocket,
-    });
+    return new Response(null, { status: 101, webSocket: client as WebSocket });
   }
 
   private handleWebSocket(ws: WebSocket): void {
@@ -97,35 +96,18 @@ export class GameLobby {
       }
     });
 
-    ws.addEventListener('close', () => {
-      this.handleDisconnect(playerId);
-    });
-
-    ws.addEventListener('error', () => {
-      this.handleDisconnect(playerId);
-    });
+    ws.addEventListener('close', () => this.handleDisconnect(playerId));
+    ws.addEventListener('error', () => this.handleDisconnect(playerId));
   }
 
   private handleMessage(ws: WebSocket, playerId: string, msg: ClientMessage): void {
     switch (msg.type) {
-      case 'join':
-        this.handleJoin(ws, playerId, msg.playerName);
-        break;
-      case 'rename':
-        this.handleRename(playerId, msg.playerName);
-        break;
-      case 'start_game':
-        this.handleStartGame(playerId);
-        break;
-      case 'restart_game':
-        this.handleRestartGame(playerId);
-        break;
-      case 'input':
-        this.handleInput(playerId, msg.keys);
-        break;
-      case 'ping':
-        this.send(ws, { type: 'pong' });
-        break;
+      case 'join':        this.handleJoin(ws, playerId, msg.playerName); break;
+      case 'rename':      this.handleRename(playerId, msg.playerName); break;
+      case 'start_game':  this.handleStartGame(playerId); break;
+      case 'restart_game': this.handleRestartGame(playerId); break;
+      case 'input':       this.handleInput(playerId, msg.keys); break;
+      case 'ping':        this.send(ws, { type: 'pong' }); break;
     }
   }
 
@@ -141,12 +123,7 @@ export class GameLobby {
 
     const colorIndex = this.lobbyState.players.length;
     const color: PlayerColor = PLAYER_COLORS[colorIndex];
-
-    const startPositions = [
-      { x: 1, z: 1 }, { x: 18, z: 1 }, { x: 18, z: 18 }, { x: 1, z: 18 },
-      { x: 9, z: 1 }, { x: 18, z: 9 }, { x: 9, z: 18 }, { x: 1, z: 9 },
-    ];
-    const startPos = startPositions[colorIndex];
+    const cfg = START_CONFIGS[colorIndex];
 
     const player: Player = {
       id: playerId,
@@ -155,24 +132,17 @@ export class GameLobby {
       isHost: this.lobbyState.players.length === 0,
       isReady: false,
       isAlive: true,
-      position: startPos,
+      position: { x: cfg.x, z: cfg.z },
+      direction: cfg.dir,
       score: 0,
     };
 
     this.lobbyState.players.push(player);
-
-    const session: PlayerSession = {
-      ws,
-      playerId,
+    this.sessions.set(playerId, {
+      ws, playerId, colorIndex,
       keys: { w: false, a: false, s: false, d: false, space: false, shift: false },
-      worldPos: { x: startPos.x, z: startPos.z },
-      velocity: { x: 0, z: 0 },
-      dashCooldown: 0,
-      isDashing: false,
-      dashActiveTimer: 0,
-      blastCooldown: 0,
-    };
-    this.sessions.set(playerId, session);
+      pendingDirection: null,
+    });
 
     this.send(ws, { type: 'joined', playerId, lobbyState: this.lobbyState });
     this.broadcast({ type: 'lobby_update', lobbyState: this.lobbyState }, playerId);
@@ -194,7 +164,6 @@ export class GameLobby {
     if (this.lobbyState.players.length < 1) return;
     if (this.lobbyState.status !== 'waiting') return;
 
-    // Initialise round scores for all current players
     const roundScores: Record<string, number> = {};
     this.lobbyState.players.forEach(p => { roundScores[p.id] = 0; });
     this.lobbyState.roundScores = roundScores;
@@ -207,35 +176,20 @@ export class GameLobby {
 
   private startRound(): void {
     this.lobbyState.status = 'playing';
-    this.lobbyState.tiles = this.initTiles();
+    this.lobbyState.trail = this.initTrail();
     this.lobbyState.gameTime = 0;
-    this.fallCount = 0;
+    this.lobbyState.speedLevel = 0;
+    this.moveTickCounter = 0;
 
-    // Reset player positions and state
-    const startPositions = [
-      { x: 1, z: 1 }, { x: 18, z: 1 }, { x: 18, z: 18 }, { x: 1, z: 18 },
-      { x: 9, z: 1 }, { x: 18, z: 9 }, { x: 9, z: 18 }, { x: 1, z: 9 },
-    ];
+    // Reset player positions and directions
     this.lobbyState.players.forEach((p, i) => {
+      const cfg = START_CONFIGS[i];
       p.isAlive = true;
-      p.position = startPositions[i];
-      p.blastCooldown = 0;
-      p.blastActive = false;
-      const session = this.sessions.get(p.id);
-      if (session) {
-        session.worldPos = { x: startPositions[i].x, z: startPositions[i].z };
-        session.velocity = { x: 0, z: 0 };
-        session.dashCooldown = 0;
-        session.isDashing = false;
-        session.dashActiveTimer = 0;
-        session.blastCooldown = 0;
-      }
+      p.position = { x: cfg.x, z: cfg.z };
+      p.direction = cfg.dir;
     });
 
-    // Spleef: no gravity wells — open flat floor
-    this.lobbyState.gravityWells = [];
-
-    // Countdown: 3 -> 2 -> 1 -> GO
+    // Countdown: 3 → 2 → 1 → GO
     for (const t of this.countdownTimeouts) clearTimeout(t);
     this.countdownTimeouts = [];
 
@@ -263,14 +217,6 @@ export class GameLobby {
 
   private startGameLoop(): void {
     let lastTick = Date.now();
-    let tileFallAccumulator = 0;
-
-    const INITIAL_FALL_INTERVAL = 9000;
-    const MIN_FALL_INTERVAL = 3000;
-    const FALLS_PER_ACCELERATION = 4;
-    const INTERVAL_DECREASE = 200;
-    const getCurrentInterval = () =>
-      Math.max(MIN_FALL_INTERVAL, INITIAL_FALL_INTERVAL - Math.floor(this.fallCount / FALLS_PER_ACCELERATION) * INTERVAL_DECREASE);
 
     this.gameInterval = setInterval(() => {
       const now = Date.now();
@@ -278,76 +224,185 @@ export class GameLobby {
       lastTick = now;
 
       this.lobbyState.gameTime += dt / 1000;
-      tileFallAccumulator += dt;
 
-      // Process player movement
-      this.processMovement(dt);
-
-      // Tile falling logic
-      const currentInterval = getCurrentInterval();
-      if (tileFallAccumulator >= currentInterval) {
-        tileFallAccumulator = 0;
-        this.dropRandomTiles();
-        this.fallCount++;
+      // Advance speed level based on elapsed time
+      let newLevel = 0;
+      for (let i = SPEED_LEVEL_THRESHOLDS.length - 1; i >= 0; i--) {
+        if (this.lobbyState.gameTime >= SPEED_LEVEL_THRESHOLDS[i]) {
+          newLevel = i;
+          break;
+        }
       }
-      this.lobbyState.nextTileFallIn = currentInterval - tileFallAccumulator;
+      this.lobbyState.speedLevel = newLevel;
+      const moveTicks = SPEED_MOVE_TICKS[newLevel];
 
-      // Check eliminations
-      this.checkEliminations();
+      this.moveTickCounter++;
 
-      // Check round win condition
+      if (this.moveTickCounter >= moveTicks) {
+        this.moveTickCounter = 0;
+        this.advanceBikes();
+      }
+
+      // Check win condition
       const alivePlayers = this.lobbyState.players.filter(p => p.isAlive);
-      if (alivePlayers.length <= 1) {
-        const roundWinner = alivePlayers[0] || null;
-
-        if (this.gameInterval) {
-          clearInterval(this.gameInterval);
-          this.gameInterval = null;
-        }
-
-        // Award round point
-        if (roundWinner) {
-          this.lobbyState.roundScores[roundWinner.id] =
-            (this.lobbyState.roundScores[roundWinner.id] ?? 0) + 1;
-          this.lobbyState.roundWinnerId = roundWinner.id;
-        } else {
-          this.lobbyState.roundWinnerId = null;
-        }
-
-        // Check if match is over (best of MAX_ROUNDS)
-        const maxWins = Math.ceil(this.lobbyState.maxRounds / 2);
-        const someoneWonMatch = roundWinner &&
-          (this.lobbyState.roundScores[roundWinner.id] ?? 0) >= maxWins;
-        const allRoundsPlayed = this.lobbyState.currentRound >= this.lobbyState.maxRounds;
-
-        if (someoneWonMatch || allRoundsPlayed) {
-          // Determine overall match winner (most round wins)
-          let matchWinner: Player | null = null;
-          let topWins = -1;
-          for (const p of this.lobbyState.players) {
-            const wins = this.lobbyState.roundScores[p.id] ?? 0;
-            if (wins > topWins) { topWins = wins; matchWinner = p; }
-          }
-          this.lobbyState.winner = matchWinner?.id ?? null;
-          this.lobbyState.status = 'finished';
-          this.broadcastAll({ type: 'game_over', winner: matchWinner || null, lobbyState: this.lobbyState });
-        } else {
-          // Show round-over screen, then start the next round after a delay
-          this.lobbyState.status = 'round_over';
-          this.broadcastAll({ type: 'game_state', lobbyState: this.lobbyState });
-
-          const nextRoundTimeout = setTimeout(() => {
-            this.lobbyState.currentRound += 1;
-            this.startRound();
-          }, 4000);
-          this.countdownTimeouts.push(nextRoundTimeout);
-        }
+      // Safety check: if advanceBikes() somehow left ≤1 alive player without ending the round
+      // (e.g. via disconnect), catch it here.  moveTickCounter === 0 ensures we only act
+      // immediately after a move tick, keeping game state consistent.
+      if (alivePlayers.length <= 1 && this.moveTickCounter === 0) {
+        this.endRound(alivePlayers[0] ?? null);
         return;
       }
 
-      // Broadcast game state
       this.broadcastAll({ type: 'game_state', lobbyState: this.lobbyState });
     }, TICK_RATE);
+  }
+
+  private advanceBikes(): void {
+    // 1. Determine the direction each alive player wants to move
+    const desiredDirs = new Map<string, Direction>();
+    for (const [playerId, session] of this.sessions) {
+      const player = this.lobbyState.players.find(p => p.id === playerId);
+      if (!player || !player.isAlive) continue;
+      desiredDirs.set(playerId, this.resolveDirection(session, player.direction));
+    }
+
+    // 2. Compute next positions & detect boundary / trail collisions
+    const nextPos = new Map<string, { x: number; z: number }>();
+    const toEliminate = new Set<string>();
+
+    for (const [playerId, dir] of desiredDirs) {
+      const player = this.lobbyState.players.find(p => p.id === playerId)!;
+      const { x, z } = player.position;
+      let nx = x, nz = z;
+      switch (dir) {
+        case 'N': nz -= 1; break;
+        case 'S': nz += 1; break;
+        case 'E': nx += 1; break;
+        case 'W': nx -= 1; break;
+      }
+
+      // Out-of-bounds → eliminate
+      if (nx < 0 || nx >= ARENA_SIZE || nz < 0 || nz >= ARENA_SIZE) {
+        toEliminate.add(playerId);
+        continue;
+      }
+
+      // Trail / occupied cell → eliminate
+      if (this.lobbyState.trail[nx][nz] !== 0) {
+        toEliminate.add(playerId);
+        continue;
+      }
+
+      nextPos.set(playerId, { x: nx, z: nz });
+    }
+
+    // 3. Head-on collision: two bikes targeting the same empty cell
+    const cellTargets = new Map<string, string[]>();
+    for (const [id, pos] of nextPos) {
+      const key = `${pos.x},${pos.z}`;
+      if (!cellTargets.has(key)) cellTargets.set(key, []);
+      cellTargets.get(key)!.push(id);
+    }
+    for (const [, ids] of cellTargets) {
+      if (ids.length > 1) {
+        ids.forEach(id => toEliminate.add(id));
+      }
+    }
+    for (const id of toEliminate) nextPos.delete(id);
+
+    // 4. Stamp old positions as trail, update positions & directions
+    for (const [playerId, pos] of nextPos) {
+      const player = this.lobbyState.players.find(p => p.id === playerId)!;
+      const session = this.sessions.get(playerId)!;
+      // Leave a wall at the cell the bike is vacating
+      this.lobbyState.trail[player.position.x][player.position.z] = session.colorIndex + 1;
+      player.position = pos;
+      player.direction = desiredDirs.get(playerId)!;
+    }
+
+    // 5. Eliminate crashed bikes (also mark their final cell)
+    for (const playerId of toEliminate) {
+      const player = this.lobbyState.players.find(p => p.id === playerId);
+      if (player && player.isAlive) {
+        player.isAlive = false;
+        // Mark their last cell so it's visually blocked
+        const session = this.sessions.get(playerId);
+        if (session) {
+          this.lobbyState.trail[player.position.x][player.position.z] = session.colorIndex + 1;
+        }
+        this.broadcastAll({ type: 'player_eliminated', playerId, playerName: player.name });
+      }
+    }
+
+    // 6. Re-check win condition right after advance
+    const alive = this.lobbyState.players.filter(p => p.isAlive);
+    if (alive.length <= 1) {
+      if (this.gameInterval) { clearInterval(this.gameInterval); this.gameInterval = null; }
+      this.endRound(alive[0] ?? null);
+    }
+  }
+
+  private resolveDirection(
+    session: PlayerSession,
+    currentDir: Direction,
+  ): Direction {
+    // Consume buffered turn first (set by handleInput immediately on key press)
+    if (session.pendingDirection !== null && session.pendingDirection !== DIRECTION_OPPOSITES[currentDir]) {
+      const dir = session.pendingDirection;
+      session.pendingDirection = null;
+      return dir;
+    }
+    // Fall back to current held key state
+    // Key priority (highest first): W→North, D→East, A→West, S→South.
+    // When multiple keys are held the first non-reversing direction wins.
+    const candidates: [boolean, Direction][] = [
+      [session.keys.w, 'N'],
+      [session.keys.d, 'E'],
+      [session.keys.a, 'W'],
+      [session.keys.s, 'S'],
+    ];
+    for (const [held, dir] of candidates) {
+      if (held && dir !== DIRECTION_OPPOSITES[currentDir]) return dir;
+    }
+    return currentDir;
+  }
+
+  private endRound(roundWinner: Player | null): void {
+    if (this.gameInterval) { clearInterval(this.gameInterval); this.gameInterval = null; }
+
+    if (roundWinner) {
+      this.lobbyState.roundScores[roundWinner.id] =
+        (this.lobbyState.roundScores[roundWinner.id] ?? 0) + 1;
+      this.lobbyState.roundWinnerId = roundWinner.id;
+    } else {
+      this.lobbyState.roundWinnerId = null;
+    }
+
+    const maxWins = Math.ceil(this.lobbyState.maxRounds / 2);
+    const someoneWonMatch = roundWinner &&
+      (this.lobbyState.roundScores[roundWinner.id] ?? 0) >= maxWins;
+    const allRoundsPlayed = this.lobbyState.currentRound >= this.lobbyState.maxRounds;
+
+    if (someoneWonMatch || allRoundsPlayed) {
+      let matchWinner: Player | null = null;
+      let topWins = -1;
+      for (const p of this.lobbyState.players) {
+        const wins = this.lobbyState.roundScores[p.id] ?? 0;
+        if (wins > topWins) { topWins = wins; matchWinner = p; }
+      }
+      this.lobbyState.winner = matchWinner?.id ?? null;
+      this.lobbyState.status = 'finished';
+      this.broadcastAll({ type: 'game_over', winner: matchWinner || null, lobbyState: this.lobbyState });
+    } else {
+      this.lobbyState.status = 'round_over';
+      this.broadcastAll({ type: 'game_state', lobbyState: this.lobbyState });
+
+      const nextRoundTimeout = setTimeout(() => {
+        this.lobbyState.currentRound += 1;
+        this.startRound();
+      }, 4000);
+      this.countdownTimeouts.push(nextRoundTimeout);
+    }
   }
 
   private handleRestartGame(playerId: string): void {
@@ -355,436 +410,94 @@ export class GameLobby {
     if (!player?.isHost) return;
     if (this.lobbyState.status !== 'finished') return;
 
-    // Stop game loop if running
-    if (this.gameInterval) {
-      clearInterval(this.gameInterval);
-      this.gameInterval = null;
-    }
+    if (this.gameInterval) { clearInterval(this.gameInterval); this.gameInterval = null; }
     for (const t of this.countdownTimeouts) clearTimeout(t);
     this.countdownTimeouts = [];
 
-    // Reset to waiting state
     this.lobbyState.status = 'waiting';
-    this.lobbyState.tiles = this.initTiles();
+    this.lobbyState.trail = this.initTrail();
     this.lobbyState.gameTime = 0;
     this.lobbyState.winner = null;
-    this.lobbyState.nextTileFallIn = 7000;
     this.lobbyState.countdown = undefined;
-    this.lobbyState.gravityWells = [];
+    this.lobbyState.speedLevel = 0;
     this.lobbyState.currentRound = 0;
     this.lobbyState.roundScores = {};
     this.lobbyState.roundWinnerId = null;
-    this.fallCount = 0;
+    this.moveTickCounter = 0;
 
-    const startPositions = [
-      { x: 1, z: 1 }, { x: 18, z: 1 }, { x: 18, z: 18 }, { x: 1, z: 18 },
-      { x: 9, z: 1 }, { x: 18, z: 9 }, { x: 9, z: 18 }, { x: 1, z: 9 },
-    ];
     this.lobbyState.players.forEach((p, i) => {
+      const cfg = START_CONFIGS[i];
       p.isAlive = true;
       p.score = 0;
-      p.blastCooldown = 0;
-      p.blastActive = false;
-      p.position = startPositions[i];
-      const session = this.sessions.get(p.id);
-      if (session) {
-        session.worldPos = { x: startPositions[i].x, z: startPositions[i].z };
-        session.velocity = { x: 0, z: 0 };
-        session.dashCooldown = 0;
-        session.isDashing = false;
-        session.dashActiveTimer = 0;
-        session.blastCooldown = 0;
-      }
+      p.position = { x: cfg.x, z: cfg.z };
+      p.direction = cfg.dir;
     });
 
     this.broadcastAll({ type: 'lobby_update', lobbyState: this.lobbyState });
   }
 
-  private processMovement(dt: number): void {
-    const speed = PLAYER_SPEED * (dt / TICK_RATE);
-    const DASH_ACTIVE_WINDOW = 350; // ms that a dash counts as "active" for boosted collisions
-
-    // Reset per-tick flags
-    for (const player of this.lobbyState.players) {
-      player.blastActive = false;
-    }
-
-    for (const [playerId, session] of this.sessions) {
-      const player = this.lobbyState.players.find(p => p.id === playerId);
-      if (!player || !player.isAlive) continue;
-
-      // Update dash cooldown and active timer
-      if (session.dashCooldown > 0) {
-        session.dashCooldown -= dt;
-      }
-      if (session.dashActiveTimer > 0) {
-        session.dashActiveTimer -= dt;
-        if (session.dashActiveTimer <= 0) session.isDashing = false;
-      }
-
-      // Update blast cooldown
-      if (session.blastCooldown > 0) {
-        session.blastCooldown -= dt;
-      }
-
-      // Apply input to velocity
-      let inputX = 0;
-      let inputZ = 0;
-      if (session.keys.w) inputZ -= 1;
-      if (session.keys.s) inputZ += 1;
-      if (session.keys.a) inputX -= 1;
-      if (session.keys.d) inputX += 1;
-
-      // Normalize diagonal movement
-      if (inputX !== 0 && inputZ !== 0) {
-        inputX *= 0.707;
-        inputZ *= 0.707;
-      }
-
-      // Dash
-      if (session.keys.space && session.dashCooldown <= 0 && (inputX !== 0 || inputZ !== 0)) {
-        session.velocity.x += inputX * DASH_FORCE;
-        session.velocity.z += inputZ * DASH_FORCE;
-        session.dashCooldown = DASH_COOLDOWN_MS;
-        session.isDashing = true;
-        session.dashActiveTimer = DASH_ACTIVE_WINDOW;
-      }
-
-      // Blast (Shift): omnidirectional shockwave pushing nearby players and gravity wells
-      if (session.keys.shift && session.blastCooldown <= 0) {
-        session.blastCooldown = BLAST_COOLDOWN_MS;
-        player.blastActive = true;
-
-        // Push nearby players
-        for (const [otherId, otherSession] of this.sessions) {
-          if (otherId === playerId) continue;
-          const otherPlayer = this.lobbyState.players.find(p => p.id === otherId);
-          if (!otherPlayer || !otherPlayer.isAlive) continue;
-
-          const dx = otherSession.worldPos.x - session.worldPos.x;
-          const dz = otherSession.worldPos.z - session.worldPos.z;
-          const dist = Math.sqrt(dx * dx + dz * dz);
-
-          if (dist < BLAST_RADIUS && dist > 0.01) {
-            const force = BLAST_FORCE * (1 - dist / BLAST_RADIUS);
-            otherSession.velocity.x += (dx / dist) * force;
-            otherSession.velocity.z += (dz / dist) * force;
-          }
-        }
-
-        // Push nearby gravity wells
-        for (const well of this.lobbyState.gravityWells) {
-          const dx = well.position.x - session.worldPos.x;
-          const dz = well.position.z - session.worldPos.z;
-          const dist = Math.sqrt(dx * dx + dz * dz);
-
-          if (dist < BLAST_RADIUS && dist > 0.01) {
-            const force = 1.8 * (1 - dist / BLAST_RADIUS);
-            well.velocity.x += (dx / dist) * force;
-            well.velocity.z += (dz / dist) * force;
-          }
-        }
-      }
-
-      // Add movement to velocity
-      session.velocity.x += inputX * speed;
-      session.velocity.z += inputZ * speed;
-
-      // Apply friction
-      session.velocity.x *= 0.85;
-      session.velocity.z *= 0.85;
-
-      // Clamp velocity (higher cap during dash for more satisfying pushes)
-      const maxVel = session.isDashing ? 0.9 : 0.65;
-      session.velocity.x = Math.max(-maxVel, Math.min(maxVel, session.velocity.x));
-      session.velocity.z = Math.max(-maxVel, Math.min(maxVel, session.velocity.z));
-
-      // Update position
-      session.worldPos.x += session.velocity.x;
-      session.worldPos.z += session.velocity.z;
-
-      // Clamp to arena bounds
-      session.worldPos.x = Math.max(-0.5, Math.min(ARENA_SIZE - 0.5, session.worldPos.x));
-      session.worldPos.z = Math.max(-0.5, Math.min(ARENA_SIZE - 0.5, session.worldPos.z));
-
-      // Wall collision (AABB: wall half = 0.5, player radius = 0.42)
-      const WALL_COMBINED = 0.5 + 0.42; // wall half-width + player collision radius
-      for (const wall of WALL_CELLS) {
-        const wdx = session.worldPos.x - wall.x;
-        const wdz = session.worldPos.z - wall.z;
-        const ovX = WALL_COMBINED - Math.abs(wdx);
-        const ovZ = WALL_COMBINED - Math.abs(wdz);
-        if (ovX > 0 && ovZ > 0) {
-          if (ovX <= ovZ) {
-            session.worldPos.x += wdx >= 0 ? ovX : -ovX;
-            session.velocity.x = 0;
-          } else {
-            session.worldPos.z += wdz >= 0 ? ovZ : -ovZ;
-            session.velocity.z = 0;
-          }
-        }
-      }
-
-      // Update grid position
-      player.position.x = Math.round(session.worldPos.x);
-      player.position.z = Math.round(session.worldPos.z);
-
-      // Clamp grid position
-      player.position.x = Math.max(0, Math.min(ARENA_SIZE - 1, player.position.x));
-      player.position.z = Math.max(0, Math.min(ARENA_SIZE - 1, player.position.z));
-
-      // Expose cooldowns to player
-      player.dashCooldown = Math.max(0, session.dashCooldown);
-      player.blastCooldown = Math.max(0, session.blastCooldown);
-
-      // Spleef: tile under the player begins crumbling (3-second grace period at round start)
-      if (this.lobbyState.gameTime >= 3.0) {
-        // Use Math.floor to guarantee integer tile indices (player.position is already Math.round'd
-        // but the type is number; capturing as const ensures the closure references the correct tile)
-        const tx = Math.floor(player.position.x);
-        const tz = Math.floor(player.position.z);
-        if (
-          tx >= 0 && tx < ARENA_SIZE &&
-          tz >= 0 && tz < ARENA_SIZE &&
-          this.lobbyState.tiles[tx][tz].state === 'solid'
-        ) {
-          this.lobbyState.tiles[tx][tz] = { x: tx, z: tz, state: 'crumbling' };
-          // tx and tz are const block-scoped bindings — the closure captures their immutable values
-          setTimeout(() => {
-            if (this.lobbyState.tiles[tx][tz].state === 'crumbling') {
-              this.lobbyState.tiles[tx][tz] = { x: tx, z: tz, state: 'fallen' };
-            }
-          }, TILE_PLAYER_CRUMBLE_DELAY);
-        }
-      }
-
-      // Check collision with other players
-      for (const [otherId, otherSession] of this.sessions) {
-        if (otherId === playerId) continue;
-        const otherPlayer = this.lobbyState.players.find(p => p.id === otherId);
-        if (!otherPlayer || !otherPlayer.isAlive) continue;
-
-        const dx = session.worldPos.x - otherSession.worldPos.x;
-        const dz = session.worldPos.z - otherSession.worldPos.z;
-        const dist = Math.sqrt(dx * dx + dz * dz);
-
-        if (dist < 1.0 && dist > 0.001) {
-          const nx = dx / dist;
-          const nz = dz / dist;
-          const overlap = 1.0 - dist;
-
-          session.worldPos.x += nx * overlap * 0.5;
-          session.worldPos.z += nz * overlap * 0.5;
-          otherSession.worldPos.x -= nx * overlap * 0.5;
-          otherSession.worldPos.z -= nz * overlap * 0.5;
-
-          // Boosted velocity transfer when the attacker is actively dashing
-          const velTransfer = session.isDashing ? 0.55 : 0.3;
-          const relVelX = session.velocity.x - otherSession.velocity.x;
-          const relVelZ = session.velocity.z - otherSession.velocity.z;
-          const relVelDotN = relVelX * nx + relVelZ * nz;
-
-          if (relVelDotN > 0) {
-            otherSession.velocity.x -= nx * relVelDotN * velTransfer;
-            otherSession.velocity.z -= nz * relVelDotN * velTransfer;
-            session.velocity.x -= nx * relVelDotN * velTransfer * 0.5;
-            session.velocity.z -= nz * relVelDotN * velTransfer * 0.5;
-          }
-        }
-      }
-    }
-
-    // Process gravity wells: pull players, handle player collisions, move wells
-    const WELL_BOUND_MIN = 0.8;
-    const WELL_BOUND_MAX = ARENA_SIZE - 0.8;
-    for (const well of this.lobbyState.gravityWells) {
-      // Apply gravity pull to each alive player
-      for (const [playerId, session] of this.sessions) {
-        const player = this.lobbyState.players.find(p => p.id === playerId);
-        if (!player || !player.isAlive) continue;
-
-        const dx = well.position.x - session.worldPos.x;
-        const dz = well.position.z - session.worldPos.z;
-        const dist = Math.sqrt(dx * dx + dz * dz);
-
-        if (dist < GRAVITY_WELL_INFLUENCE_RADIUS && dist > 0.8) {
-          const pullFactor = GRAVITY_WELL_PULL * (1 - dist / GRAVITY_WELL_INFLUENCE_RADIUS);
-          session.velocity.x += (dx / dist) * pullFactor;
-          session.velocity.z += (dz / dist) * pullFactor;
-        }
-
-        // Player dashes into well — push well away
-        if (dist < 0.9 && dist > 0.001 && session.isDashing) {
-          const nx = dx / dist;
-          const nz = dz / dist;
-          well.velocity.x -= nx * 0.5;
-          well.velocity.z -= nz * 0.5;
-          // Small bounce-back on the player
-          session.velocity.x += nx * 0.2;
-          session.velocity.z += nz * 0.2;
-        }
-      }
-
-      // Move the well
-      well.position.x += well.velocity.x;
-      well.position.z += well.velocity.z;
-      well.velocity.x *= 0.93;
-      well.velocity.z *= 0.93;
-
-      // Bounce off arena boundaries
-      if (well.position.x < WELL_BOUND_MIN) {
-        well.position.x = WELL_BOUND_MIN;
-        well.velocity.x = Math.abs(well.velocity.x) * 0.7;
-      } else if (well.position.x > WELL_BOUND_MAX) {
-        well.position.x = WELL_BOUND_MAX;
-        well.velocity.x = -Math.abs(well.velocity.x) * 0.7;
-      }
-      if (well.position.z < WELL_BOUND_MIN) {
-        well.position.z = WELL_BOUND_MIN;
-        well.velocity.z = Math.abs(well.velocity.z) * 0.7;
-      } else if (well.position.z > WELL_BOUND_MAX) {
-        well.position.z = WELL_BOUND_MAX;
-        well.velocity.z = -Math.abs(well.velocity.z) * 0.7;
-      }
-
-      // Bounce gravity wells off wall cells (wall half = 0.5, well collision radius = 0.7)
-      const WELL_WALL_COMBINED = 0.5 + 0.7; // wall half-width + well radius
-      for (const wall of WALL_CELLS) {
-        const wdx = well.position.x - wall.x;
-        const wdz = well.position.z - wall.z;
-        const ovX = WELL_WALL_COMBINED - Math.abs(wdx);
-        const ovZ = WELL_WALL_COMBINED - Math.abs(wdz);
-        if (ovX > 0 && ovZ > 0) {
-          if (ovX <= ovZ) {
-            well.position.x += wdx >= 0 ? ovX : -ovX;
-            well.velocity.x *= -0.7;
-          } else {
-            well.position.z += wdz >= 0 ? ovZ : -ovZ;
-            well.velocity.z *= -0.7;
-          }
-        }
-      }
-    }
-  }
-
-  private dropRandomTiles(): void {
-    const solidTiles: Array<{ x: number; z: number }> = [];
-    for (let x = 0; x < ARENA_SIZE; x++) {
-      for (let z = 0; z < ARENA_SIZE; z++) {
-        if (this.lobbyState.tiles[x][z].state === 'solid' && !this.wallSet.has(`${x},${z}`)) {
-          solidTiles.push({ x, z });
-        }
-      }
-    }
-
-    if (solidTiles.length === 0) return;
-
-    for (let i = solidTiles.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [solidTiles[i], solidTiles[j]] = [solidTiles[j], solidTiles[i]];
-    }
-
-    const tilesToFall = Math.min(TILES_PER_FALL, solidTiles.length);
-    for (let i = 0; i < tilesToFall; i++) {
-      const tile = solidTiles[i];
-      // Mark as crumbling first
-      this.lobbyState.tiles[tile.x][tile.z] = { x: tile.x, z: tile.z, state: 'crumbling' };
-      // Schedule transition to fallen after TILE_CRUMBLE_WARNING ms
-      const tx = tile.x;
-      const tz = tile.z;
-      setTimeout(() => {
-        if (this.lobbyState.tiles[tx][tz].state === 'crumbling') {
-          this.lobbyState.tiles[tx][tz] = { x: tx, z: tz, state: 'fallen' };
-        }
-      }, TILE_CRUMBLE_WARNING);
-    }
-  }
-
-  private checkEliminations(): void {
-    for (const [playerId, session] of this.sessions) {
-      const player = this.lobbyState.players.find(p => p.id === playerId);
-      if (!player || !player.isAlive) continue;
-
-      if (
-        session.worldPos.x < -0.4 || session.worldPos.x > ARENA_SIZE - 0.6 ||
-        session.worldPos.z < -0.4 || session.worldPos.z > ARENA_SIZE - 0.6
-      ) {
-        this.eliminatePlayer(player);
-        continue;
-      }
-
-      const tileX = Math.round(session.worldPos.x);
-      const tileZ = Math.round(session.worldPos.z);
-      if (
-        tileX >= 0 && tileX < ARENA_SIZE &&
-        tileZ >= 0 && tileZ < ARENA_SIZE &&
-        this.lobbyState.tiles[tileX][tileZ].state === 'fallen'
-      ) {
-        this.eliminatePlayer(player);
-      }
-    }
-  }
-
-  private eliminatePlayer(player: Player): void {
-    player.isAlive = false;
-    this.broadcastAll({ type: 'player_eliminated', playerId: player.id, playerName: player.name });
-  }
-
-  private handleInput(
-    playerId: string,
-    keys: { w: boolean; a: boolean; s: boolean; d: boolean; space: boolean; shift: boolean }
-  ): void {
+  private handleInput(playerId: string, keys: PlayerSession['keys']): void {
     const session = this.sessions.get(playerId);
-    if (session) {
-      session.keys = keys;
+    if (!session) return;
+
+    // Detect which direction the new key state wants and buffer it immediately.
+    // This ensures a quick tap between move ticks is never lost.
+    const player = this.lobbyState.players.find(p => p.id === playerId);
+    if (player && player.isAlive) {
+      const candidates: [boolean, Direction][] = [
+        [keys.w, 'N'],
+        [keys.d, 'E'],
+        [keys.a, 'W'],
+        [keys.s, 'S'],
+      ];
+      for (const [held, dir] of candidates) {
+        if (held && dir !== player.direction && dir !== DIRECTION_OPPOSITES[player.direction]) {
+          // Only overwrite the buffer if this is a genuinely new turn request
+          session.pendingDirection = dir;
+          break;
+        }
+      }
     }
+
+    session.keys = keys;
   }
 
   private handleDisconnect(playerId: string): void {
     this.sessions.delete(playerId);
-    const playerIndex = this.lobbyState.players.findIndex(p => p.id === playerId);
-    if (playerIndex !== -1) {
-      const player = this.lobbyState.players[playerIndex];
-      player.isAlive = false;
+    const idx = this.lobbyState.players.findIndex(p => p.id === playerId);
+    if (idx === -1) return;
 
-      if (this.lobbyState.status === 'waiting') {
-        this.lobbyState.players.splice(playerIndex, 1);
-        if (player.isHost && this.lobbyState.players.length > 0) {
-          this.lobbyState.players[0].isHost = true;
-        }
-        this.lobbyState.players.forEach((p, i) => {
-          p.color = PLAYER_COLORS[i];
-        });
+    this.lobbyState.players.splice(idx, 1);
+
+    // Promote new host if needed
+    if (this.lobbyState.players.length > 0 && !this.lobbyState.players.some(p => p.isHost)) {
+      this.lobbyState.players[0].isHost = true;
+    }
+
+    // If only one player left during play, end round
+    if (this.lobbyState.status === 'playing') {
+      const alive = this.lobbyState.players.filter(p => p.isAlive);
+      if (alive.length <= 1) {
+        if (this.gameInterval) { clearInterval(this.gameInterval); this.gameInterval = null; }
+        this.endRound(alive[0] ?? null);
+        return;
       }
-
-      this.broadcastAll({ type: 'lobby_update', lobbyState: this.lobbyState });
     }
 
-    if (this.sessions.size === 0 && this.gameInterval) {
-      clearInterval(this.gameInterval);
-      this.gameInterval = null;
-    }
+    this.broadcastAll({ type: 'lobby_update', lobbyState: this.lobbyState });
   }
 
   private send(ws: WebSocket, msg: ServerMessage): void {
-    try {
-      ws.send(JSON.stringify(msg));
-    } catch (e) {
-      // WebSocket might be closed
-    }
+    try { ws.send(JSON.stringify(msg)); } catch { /* connection already closed */ }
   }
 
   private broadcast(msg: ServerMessage, excludeId?: string): void {
-    for (const [id, session] of this.sessions) {
-      if (id !== excludeId) {
-        this.send(session.ws, msg);
-      }
+    for (const session of this.sessions.values()) {
+      if (session.playerId !== excludeId) this.send(session.ws, msg);
     }
   }
 
   private broadcastAll(msg: ServerMessage): void {
-    for (const session of this.sessions.values()) {
-      this.send(session.ws, msg);
-    }
+    for (const session of this.sessions.values()) this.send(session.ws, msg);
   }
 }

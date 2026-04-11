@@ -14,6 +14,10 @@ export interface Player {
   isAlive: boolean;
   position: { x: number; z: number }; // grid cell position
   direction: Direction;
+  jumpCharges: number;
+  isJumping: boolean;
+  boostCharges: number;
+  isBoosting: boolean;
   score: number;
 }
 
@@ -38,6 +42,15 @@ export interface LobbyState {
   maxRounds: number;
   roundScores: Record<string, number>; // playerId -> round wins
   roundWinnerId: string | null;        // winner of the most recent round
+  powerUps: PowerUp[];
+}
+
+export type PowerUpType = 'jump' | 'boost';
+
+export interface PowerUp {
+  id: string;
+  type: PowerUpType;
+  position: { x: number; z: number };
 }
 
 // Client -> Server messages
@@ -60,7 +73,7 @@ export type ServerMessage =
   | { type: 'error'; message: string }
   | { type: 'pong' };
 
-export const ARENA_SIZE = 40;          // grid cells per side
+export const ARENA_SIZE = 80;          // grid cells per side
 export const CELL_SIZE = 1.5;          // world units per grid cell
 export const TICK_RATE = 50;           // ms per game-loop tick
 export const MAX_ROUNDS = 5;           // first to win ceil(MAX_ROUNDS/2) rounds wins the match

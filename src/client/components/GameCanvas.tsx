@@ -13,6 +13,8 @@ interface GameCanvasProps {
   onGameOver: () => void;
 }
 
+const SWIPE_KEY_RELEASE_DELAY_MS = 100;
+
 export default function GameCanvas({ lobbyState: initialState, playerId, ws, onGameOver }: GameCanvasProps) {
   const canvasRef   = useRef<HTMLCanvasElement>(null);
   const minimapRef  = useRef<HTMLCanvasElement>(null);
@@ -121,7 +123,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     swipeReleaseTimeoutRef.current = window.setTimeout(() => {
       gameRef.current?.setKeys({ w: false, a: false, s: false, d: false });
       swipeReleaseTimeoutRef.current = null;
-    }, 100);
+    }, SWIPE_KEY_RELEASE_DELAY_MS);
   }, []);
 
   const handleSwipeStart = useCallback((e: React.TouchEvent) => {

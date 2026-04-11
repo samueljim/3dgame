@@ -59,6 +59,8 @@ const POWERUP_BASE_HEIGHT = 0.9;
 const POWERUP_FLOAT_SPEED = 4;
 const POWERUP_FLOAT_PHASE_SCALE = 0.07;
 const POWERUP_FLOAT_AMPLITUDE = 0.12;
+const MIN_MOVE_DURATION_MS = 1;
+const MIN_SEGMENT_DURATION_MS = 45;
 
 /** Trail wall heights per speed level (taller = more dramatic). */
 const TRAIL_HEIGHTS = [1.2, 2.0, 3.2, 5.0] as const;
@@ -744,7 +746,7 @@ export class TronBikesGame {
       if (!mesh.alive) continue;
 
       // Position (time-based smoothing between discrete server cells)
-      const safeMoveDuration = Math.max(1, mesh.moveDuration);
+      const safeMoveDuration = Math.max(MIN_MOVE_DURATION_MS, mesh.moveDuration);
       const moveT = Math.min(1, (now - mesh.moveStartAt) / safeMoveDuration);
       const smoothMoveT = moveT * moveT * (3 - 2 * moveT);
       mesh.group.position.x = mesh.startX + (mesh.targetX - mesh.startX) * smoothMoveT;
@@ -904,7 +906,7 @@ export class TronBikesGame {
   private getMoveDurationMs(speedLevel: number): number {
     const level = Math.max(0, Math.min(speedLevel, SPEED_MOVE_TICKS.length - 1));
     const ms = SPEED_MOVE_TICKS[level] * TICK_RATE;
-    return Math.max(45, ms);
+    return Math.max(MIN_SEGMENT_DURATION_MS, ms);
   }
 
   // ─── Cleanup ─────────────────────────────────────────────────────────────────

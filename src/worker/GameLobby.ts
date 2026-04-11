@@ -303,7 +303,7 @@ export class GameLobby {
 
     for (const [playerId, dir] of desiredDirs) {
       const player = this.lobbyState.players.find(p => p.id === playerId)!;
-      const session = this.sessions.get(playerId);
+      const session = this.sessions.get(playerId)!;
       const { x, z } = player.position;
       let nx = x, nz = z;
       switch (dir) {
@@ -313,7 +313,7 @@ export class GameLobby {
         case 'W': nx -= 1; break;
       }
 
-      const canJump = Boolean(session?.keys.space && player.jumpCharges > 0);
+      const canJump = session.keys.space && player.jumpCharges > 0;
 
       // Out-of-bounds → eliminate
       if (nx < 0 || nx >= ARENA_SIZE || nz < 0 || nz >= ARENA_SIZE) {
@@ -357,7 +357,6 @@ export class GameLobby {
         }
       }
       if (toEliminate.has(playerId)) {
-        toEliminate.add(playerId);
         continue;
       }
 
@@ -432,9 +431,13 @@ export class GameLobby {
     if (this.lobbyState.powerUps.length >= MAX_JUMP_POWERUPS) return;
     if (Math.random() > POWERUP_SPAWN_CHANCE) return;
 
+    const minCell = 2;
+    const maxCell = ARENA_SIZE - 3;
+    const span = maxCell - minCell + 1;
+
     for (let attempt = 0; attempt < 60; attempt++) {
-      const x = Math.floor(Math.random() * ARENA_SIZE);
-      const z = Math.floor(Math.random() * ARENA_SIZE);
+      const x = minCell + Math.floor(Math.random() * span);
+      const z = minCell + Math.floor(Math.random() * span);
       if (this.lobbyState.trail[x][z] !== 0) continue;
       if (this.lobbyState.players.some(p => p.isAlive && p.position.x === x && p.position.z === z)) continue;
       if (this.lobbyState.powerUps.some(pu => pu.position.x === x && pu.position.z === z)) continue;

@@ -34,6 +34,12 @@ const CAMERA_INTERP_BASE = 0.03;
 const CAMERA_FOLLOW_DISTANCE = CELL_SIZE * 5.2;
 const CAMERA_HEIGHT = CELL_SIZE * 2.3;
 const CAMERA_LOOK_AHEAD = CELL_SIZE * 2.8;
+const POWERUP_SIZE_RATIO = 0.23;
+const POWERUP_EMISSIVE_INTENSITY = 2.7;
+const POWERUP_BASE_HEIGHT = 0.9;
+const POWERUP_FLOAT_SPEED = 4;
+const POWERUP_FLOAT_PHASE_SCALE = 0.07;
+const POWERUP_FLOAT_AMPLITUDE = 0.12;
 
 /** Map direction → Y rotation (radians) for bike mesh. */
 const DIR_TO_ROT: Record<Direction, number> = {
@@ -421,16 +427,16 @@ export class TronBikesGame {
     for (const powerUp of powerUps) {
       if (powerUp.type !== 'jump') continue;
       if (!this.powerUpMeshes.has(powerUp.id)) {
-        const geo = new THREE.OctahedronGeometry(CELL_SIZE * 0.23, 0);
+        const geo = new THREE.OctahedronGeometry(CELL_SIZE * POWERUP_SIZE_RATIO, 0);
         const mat = new THREE.MeshStandardMaterial({
           color: 0xff66ff,
           emissive: 0xff22ee,
-          emissiveIntensity: 2.7,
+          emissiveIntensity: POWERUP_EMISSIVE_INTENSITY,
           roughness: 0.15,
           metalness: 0.75,
         });
         const mesh = new THREE.Mesh(geo, mat);
-        mesh.position.set(powerUp.position.x * CELL_SIZE, 0.9, powerUp.position.z * CELL_SIZE);
+        mesh.position.set(powerUp.position.x * CELL_SIZE, POWERUP_BASE_HEIGHT, powerUp.position.z * CELL_SIZE);
         this.powerUpMeshes.set(powerUp.id, mesh);
         this.scene.add(mesh);
       }
@@ -521,7 +527,11 @@ export class TronBikesGame {
     const t = performance.now() * 0.001;
     for (const mesh of this.powerUpMeshes.values()) {
       mesh.rotation.y += dt * 2.8;
-      mesh.position.y = 0.9 + Math.sin(t * 4 + mesh.position.x * 0.07 + mesh.position.z * 0.07) * 0.12;
+      mesh.position.y = POWERUP_BASE_HEIGHT + Math.sin(
+        t * POWERUP_FLOAT_SPEED +
+        mesh.position.x * POWERUP_FLOAT_PHASE_SCALE +
+        mesh.position.z * POWERUP_FLOAT_PHASE_SCALE,
+      ) * POWERUP_FLOAT_AMPLITUDE;
     }
 
     // Smooth behind-bike camera

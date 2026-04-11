@@ -279,7 +279,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
           <div style={{ fontSize: '0.7rem', marginTop: '0.3rem', color: 'rgba(200,200,255,0.4)' }}>
             {alivePlayers.length} alive
           </div>
-          <div style={{ fontSize: '0.72rem', marginTop: '0.3rem', color: '#ff66ff', fontWeight: 700 }}>
+          <div className="hud-jump">
             JUMP {jumpCharges > 0 ? `×${jumpCharges}` : '—'}
           </div>
         </div>

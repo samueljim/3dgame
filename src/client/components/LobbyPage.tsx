@@ -183,7 +183,7 @@ export default function LobbyPage({
                 <ul>
                   <li>🏍 <strong>Steer</strong> with <kbd>WASD</kbd> or arrow keys — your bike moves automatically.</li>
                   <li>💡 Your bike leaves a <strong>glowing trail wall</strong> behind it. That wall is permanent for the round.</li>
-                  <li>🟣 Pick up rare jump cores, then press <kbd>Space</kbd> to jump over one blocking trail cell.</li>
+                  <li>🟣 Pick up rare jump power-ups, then press <kbd>Space</kbd> to jump over one blocking trail cell.</li>
                   <li>💥 <strong>Crash</strong> into any wall, arena border, or trail (yours or an opponent's) and you're eliminated.</li>
                   <li>🤝 Two bikes targeting the same cell simultaneously both crash.</li>
                   <li>🏆 Scores carry over between rounds. First to <strong>3 wins</strong> (best of 5) wins the match.</li>

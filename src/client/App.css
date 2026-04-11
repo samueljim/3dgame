@@ -531,6 +531,13 @@ body {
   text-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
 }
 
+.hud-jump {
+  font-size: 0.72rem;
+  margin-top: 0.3rem;
+  color: #ff66ff;
+  font-weight: 700;
+}
+
 .hud-tile-warning {
   font-size: 0.7rem;
   letter-spacing: 0.15em;

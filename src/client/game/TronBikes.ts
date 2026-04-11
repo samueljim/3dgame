@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { EffectComposer, RenderPass, EffectPass, BloomEffect, VignetteEffect } from 'postprocessing';
 import { gsap } from 'gsap';
-import type { LobbyState, Player, ClientMessage, Direction } from '@shared/types';
+import type { LobbyState, Player, ClientMessage, Direction, PowerUp } from '@shared/types';
 import { ARENA_SIZE, CELL_SIZE, PLAYER_COLORS, SPEED_LEVEL_THRESHOLDS } from '@shared/types';
 import type { SoundManager } from './SoundManager';
 
@@ -30,6 +30,10 @@ const INTERP_TARGET_FPS = 60;
 
 /** Rotation interpolation — faster than position for snappy feel. */
 const ROT_INTERP_BASE = 0.008;
+const CAMERA_INTERP_BASE = 0.03;
+const CAMERA_FOLLOW_DISTANCE = CELL_SIZE * 5.2;
+const CAMERA_HEIGHT = CELL_SIZE * 2.3;
+const CAMERA_LOOK_AHEAD = CELL_SIZE * 2.8;
 
 /** Map direction → Y rotation (radians) for bike mesh. */
 const DIR_TO_ROT: Record<Direction, number> = {
@@ -67,6 +71,7 @@ export class TronBikesGame {
   private soundManager: SoundManager;
 
   private bikeMeshes: Map<string, BikeMesh> = new Map();
+  private powerUpMeshes: Map<string, THREE.Mesh> = new Map();
 
   // Trail mesh grid — one slot per cell
   private trailMeshes: (THREE.Mesh | null)[][] = [];
@@ -114,13 +119,11 @@ export class TronBikesGame {
     this.scene.background = new THREE.Color(0x000510);
     this.scene.fog = new THREE.FogExp2(0x000510, 0.003);
 
-    // Camera — angled top-down
+    // Camera — smooth third-person follow
     this.camera = new THREE.PerspectiveCamera(
       55, window.innerWidth / window.innerHeight, 0.1, 500,
     );
-    const camHeight = ARENA_SIZE * CELL_SIZE * 0.95;
-    const camZOff  = ARENA_SIZE * CELL_SIZE * 0.22;
-    this.camera.position.set(ARENA_HALF, camHeight, ARENA_HALF + camZOff);
+    this.camera.position.set(ARENA_HALF, CAMERA_HEIGHT * 1.8, ARENA_HALF + CAMERA_FOLLOW_DISTANCE);
     this.camera.lookAt(ARENA_HALF, 0, ARENA_HALF);
 
     // Post-processing
@@ -171,7 +174,7 @@ export class TronBikesGame {
     dir.position.set(ARENA_HALF, 60, ARENA_HALF + 40);
     this.scene.add(dir);
 
-    // Subtle under-lighting to make trail walls readable from top-down
+    // Subtle under-lighting to make trail walls readable
     const under = new THREE.DirectionalLight(0x002244, 0.3);
     under.position.set(ARENA_HALF, -20, ARENA_HALF);
     this.scene.add(under);
@@ -323,6 +326,7 @@ export class TronBikesGame {
 
     // Update trail meshes (only changed cells)
     this.syncTrail(newState.trail);
+    this.syncPowerUps(newState.powerUps ?? []);
   }
 
   private playCrashEffect(mesh: BikeMesh, colorName: string): void {
@@ -405,6 +409,34 @@ export class TronBikesGame {
     }
   }
 
+  private syncPowerUps(powerUps: PowerUp[]): void {
+    const currentIds = new Set(powerUps.map(pu => pu.id));
+    for (const [id, mesh] of this.powerUpMeshes) {
+      if (!currentIds.has(id)) {
+        this.scene.remove(mesh);
+        this.powerUpMeshes.delete(id);
+      }
+    }
+
+    for (const powerUp of powerUps) {
+      if (powerUp.type !== 'jump') continue;
+      if (!this.powerUpMeshes.has(powerUp.id)) {
+        const geo = new THREE.OctahedronGeometry(CELL_SIZE * 0.23, 0);
+        const mat = new THREE.MeshStandardMaterial({
+          color: 0xff66ff,
+          emissive: 0xff22ee,
+          emissiveIntensity: 2.7,
+          roughness: 0.15,
+          metalness: 0.75,
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(powerUp.position.x * CELL_SIZE, 0.9, powerUp.position.z * CELL_SIZE);
+        this.powerUpMeshes.set(powerUp.id, mesh);
+        this.scene.add(mesh);
+      }
+    }
+  }
+
   public notifyElimination(_playerName: string): void {
     /* sound already played in updateState */
   }
@@ -465,32 +497,65 @@ export class TronBikesGame {
 
     const posAlpha = 1 - Math.pow(INTERP_BASE, dt * INTERP_TARGET_FPS);
     const rotAlpha = 1 - Math.pow(ROT_INTERP_BASE, dt * INTERP_TARGET_FPS);
+    const cameraAlpha = 1 - Math.pow(CAMERA_INTERP_BASE, dt * INTERP_TARGET_FPS);
+    const playerById = new Map(this.lobbyState.players.map(p => [p.id, p]));
 
     // Smoothly interpolate bike positions and rotations
-    for (const mesh of this.bikeMeshes.values()) {
+    for (const [playerId, mesh] of this.bikeMeshes) {
       if (!mesh.alive) continue;
       mesh.body.position.x += (mesh.targetX - mesh.body.position.x) * posAlpha;
       mesh.body.position.z += (mesh.targetZ - mesh.body.position.z) * posAlpha;
+      const player = playerById.get(playerId);
+      const jumpY = player?.isJumping ? 0.95 : 0.3;
+      mesh.body.position.y += (jumpY - mesh.body.position.y) * Math.min(1, posAlpha * 2.4);
       mesh.light.position.x = mesh.body.position.x;
       mesh.light.position.z = mesh.body.position.z;
-      mesh.light.position.y = 0.7;
+      mesh.light.position.y = mesh.body.position.y + 0.35;
 
       // Smooth rotation — take the shortest angular path to avoid spinning the wrong way
       const delta = shortestAngleDelta(mesh.body.rotation.y, mesh.targetRotY);
       mesh.body.rotation.y += delta * rotAlpha;
     }
 
-    // Camera shake
-    if (this.cameraShake.intensity > 0.001) {
-      const s = this.cameraShake.intensity;
-      const camH = ARENA_SIZE * CELL_SIZE * 0.95;
-      const camZ = ARENA_HALF + ARENA_SIZE * CELL_SIZE * 0.22;
-      this.camera.position.set(
-        ARENA_HALF + (Math.random() - 0.5) * s,
-        camH       + (Math.random() - 0.5) * s * 0.4,
-        camZ       + (Math.random() - 0.5) * s,
+    // Power-up float / spin
+    const t = performance.now() * 0.001;
+    for (const mesh of this.powerUpMeshes.values()) {
+      mesh.rotation.y += dt * 2.8;
+      mesh.position.y = 0.9 + Math.sin(t * 4 + mesh.position.x * 0.07 + mesh.position.z * 0.07) * 0.12;
+    }
+
+    // Smooth behind-bike camera
+    const myBike = this.bikeMeshes.get(this.myPlayerId);
+    if (myBike) {
+      const rot = myBike.body.rotation.y;
+      const dirX = -Math.sin(rot);
+      const dirZ = -Math.cos(rot);
+      const desiredX = myBike.body.position.x - dirX * CAMERA_FOLLOW_DISTANCE;
+      const desiredY = myBike.body.position.y + CAMERA_HEIGHT;
+      const desiredZ = myBike.body.position.z - dirZ * CAMERA_FOLLOW_DISTANCE;
+      this.camera.position.x += (desiredX - this.camera.position.x) * cameraAlpha;
+      this.camera.position.y += (desiredY - this.camera.position.y) * cameraAlpha;
+      this.camera.position.z += (desiredZ - this.camera.position.z) * cameraAlpha;
+
+      let shakeX = 0;
+      let shakeY = 0;
+      let shakeZ = 0;
+      if (this.cameraShake.intensity > 0.001) {
+        const s = this.cameraShake.intensity;
+        shakeX = (Math.random() - 0.5) * s;
+        shakeY = (Math.random() - 0.5) * s * 0.35;
+        shakeZ = (Math.random() - 0.5) * s;
+        this.cameraShake.intensity *= this.cameraShake.decay;
+      }
+
+      this.camera.position.x += shakeX;
+      this.camera.position.y += shakeY;
+      this.camera.position.z += shakeZ;
+      this.camera.lookAt(
+        myBike.body.position.x + dirX * CAMERA_LOOK_AHEAD,
+        myBike.body.position.y + 0.5,
+        myBike.body.position.z + dirZ * CAMERA_LOOK_AHEAD,
       );
-      this.cameraShake.intensity *= this.cameraShake.decay;
     }
 
     this.sendInput();
@@ -514,6 +579,12 @@ export class TronBikesGame {
         if (m) this.scene.remove(m);
       }
     }
+    for (const powerUpMesh of this.powerUpMeshes.values()) {
+      this.scene.remove(powerUpMesh);
+      powerUpMesh.geometry.dispose();
+      (powerUpMesh.material as THREE.Material).dispose();
+    }
+    this.powerUpMeshes.clear();
     this.trailGeo.dispose();
     for (const mat of this.trailMats) mat.dispose();
     this.renderer.dispose();

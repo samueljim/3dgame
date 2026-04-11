@@ -155,6 +155,15 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     setIsMuted(soundRef.current.isMuted);
   }, []);
 
+  const handleJumpPress = useCallback(() => {
+    soundRef.current.init();
+    gameRef.current?.setKeys({ space: true });
+  }, []);
+
+  const handleJumpRelease = useCallback(() => {
+    gameRef.current?.setKeys({ space: false });
+  }, []);
+
   const handleRestartGame = useCallback(() => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'restart_game' }));
@@ -165,6 +174,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
 
   const myPlayer = currentState.players.find(p => p.id === playerId);
   const alivePlayers = currentState.players.filter(p => p.isAlive);
+  const jumpCharges = myPlayer?.jumpCharges ?? 0;
   const minutes = Math.floor(currentState.gameTime / 60);
   const seconds = Math.floor(currentState.gameTime % 60);
 
@@ -269,6 +279,9 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
           <div style={{ fontSize: '0.7rem', marginTop: '0.3rem', color: 'rgba(200,200,255,0.4)' }}>
             {alivePlayers.length} alive
           </div>
+          <div style={{ fontSize: '0.72rem', marginTop: '0.3rem', color: '#ff66ff', fontWeight: 700 }}>
+            JUMP {jumpCharges > 0 ? `×${jumpCharges}` : '—'}
+          </div>
         </div>
 
         <div className="hud-right">
@@ -278,8 +291,9 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
           <div className="hud-controls">
             <div className="controls-title">Controls</div>
             WASD / Arrows — Steer<br />
+            Space — Jump (if charged)<br />
             <span style={{ color: 'rgba(255,180,80,0.7)', fontSize: '0.65rem' }}>
-              Don't crash into walls or trails!
+              Grab purple pickups for rare jumps.
             </span>
           </div>
         </div>
@@ -297,7 +311,20 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
         >
           <div className="joystick-thumb" ref={joystickThumbRef} />
         </div>
-        <div className="mobile-action-btns" style={{ minWidth: '70px' }} />
+        <div className="mobile-action-btns" style={{ minWidth: '70px' }}>
+          <button
+            className="btn btn-secondary"
+            style={{ minWidth: '70px', minHeight: '70px', borderRadius: '50%', padding: 0 }}
+            onTouchStart={handleJumpPress}
+            onTouchEnd={handleJumpRelease}
+            onTouchCancel={handleJumpRelease}
+            onMouseDown={handleJumpPress}
+            onMouseUp={handleJumpRelease}
+            onMouseLeave={handleJumpRelease}
+          >
+            JUMP
+          </button>
+        </div>
       </div>
 
       {showElimination && (

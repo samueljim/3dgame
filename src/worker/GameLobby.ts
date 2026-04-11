@@ -11,17 +11,33 @@ import {
 // Opposite directions — used to prevent immediate reversals
 const DIRECTION_OPPOSITES: Record<Direction, Direction> = { N: 'S', S: 'N', E: 'W', W: 'E' };
 
+const MAX_JUMP_POWERUPS = 3;
+const POWERUP_SPAWN_CHANCE = 0.05;
+const POWERUP_SPAWN_MOVE_INTERVAL = 8;
+const MAX_JUMP_CHARGES = 3;
+
+function clampCell(cell: number): number {
+  return Math.max(2, Math.min(ARENA_SIZE - 3, cell));
+}
+
 // Start positions & facing directions for up to 8 players
-const START_CONFIGS: Array<{ x: number; z: number; dir: Direction }> = [
-  { x: 2,  z: 20, dir: 'E' },
-  { x: 37, z: 20, dir: 'W' },
-  { x: 20, z: 2,  dir: 'S' },
-  { x: 20, z: 37, dir: 'N' },
-  { x: 2,  z: 8,  dir: 'E' },
-  { x: 37, z: 8,  dir: 'W' },
-  { x: 2,  z: 31, dir: 'E' },
-  { x: 37, z: 31, dir: 'W' },
-];
+function getStartConfigs(): Array<{ x: number; z: number; dir: Direction }> {
+  const mid = Math.floor(ARENA_SIZE / 2);
+  const q1 = clampCell(Math.floor(ARENA_SIZE * 0.25));
+  const q3 = clampCell(Math.floor(ARENA_SIZE * 0.75));
+  const low = 2;
+  const high = ARENA_SIZE - 3;
+  return [
+    { x: low,  z: mid, dir: 'E' },
+    { x: high, z: mid, dir: 'W' },
+    { x: mid, z: low, dir: 'S' },
+    { x: mid, z: high, dir: 'N' },
+    { x: low,  z: q1,  dir: 'E' },
+    { x: high, z: q1,  dir: 'W' },
+    { x: low,  z: q3,  dir: 'E' },
+    { x: high, z: q3,  dir: 'W' },
+  ];
+}
 
 interface PlayerSession {
   ws: WebSocket;
@@ -41,6 +57,7 @@ export class GameLobby {
   private lobbyId: string = '';
   private countdownTimeouts: ReturnType<typeof setTimeout>[] = [];
   private moveTickCounter = 0;
+  private moveCount = 0;
 
   constructor(state: DurableObjectState) {
     this.state = state;
@@ -60,6 +77,7 @@ export class GameLobby {
       maxRounds: MAX_ROUNDS,
       roundScores: {},
       roundWinnerId: null,
+      powerUps: [],
     };
   }
 
@@ -123,7 +141,7 @@ export class GameLobby {
 
     const colorIndex = this.lobbyState.players.length;
     const color: PlayerColor = PLAYER_COLORS[colorIndex];
-    const cfg = START_CONFIGS[colorIndex];
+    const cfg = getStartConfigs()[colorIndex];
 
     const player: Player = {
       id: playerId,
@@ -134,6 +152,8 @@ export class GameLobby {
       isAlive: true,
       position: { x: cfg.x, z: cfg.z },
       direction: cfg.dir,
+      jumpCharges: 0,
+      isJumping: false,
       score: 0,
     };
 
@@ -177,16 +197,20 @@ export class GameLobby {
   private startRound(): void {
     this.lobbyState.status = 'playing';
     this.lobbyState.trail = this.initTrail();
+    this.lobbyState.powerUps = [];
     this.lobbyState.gameTime = 0;
     this.lobbyState.speedLevel = 0;
     this.moveTickCounter = 0;
+    this.moveCount = 0;
 
     // Reset player positions and directions
     this.lobbyState.players.forEach((p, i) => {
-      const cfg = START_CONFIGS[i];
+      const cfg = getStartConfigs()[i];
       p.isAlive = true;
       p.position = { x: cfg.x, z: cfg.z };
       p.direction = cfg.dir;
+      p.jumpCharges = 0;
+      p.isJumping = false;
     });
 
     // Countdown: 3 → 2 → 1 → GO
@@ -258,6 +282,12 @@ export class GameLobby {
   }
 
   private advanceBikes(): void {
+    this.moveCount += 1;
+
+    for (const player of this.lobbyState.players) {
+      player.isJumping = false;
+    }
+
     // 1. Determine the direction each alive player wants to move
     const desiredDirs = new Map<string, Direction>();
     for (const [playerId, session] of this.sessions) {
@@ -269,9 +299,11 @@ export class GameLobby {
     // 2. Compute next positions & detect boundary / trail collisions
     const nextPos = new Map<string, { x: number; z: number }>();
     const toEliminate = new Set<string>();
+    const jumpedThisTick = new Set<string>();
 
     for (const [playerId, dir] of desiredDirs) {
       const player = this.lobbyState.players.find(p => p.id === playerId)!;
+      const session = this.sessions.get(playerId);
       const { x, z } = player.position;
       let nx = x, nz = z;
       switch (dir) {
@@ -281,14 +313,50 @@ export class GameLobby {
         case 'W': nx -= 1; break;
       }
 
+      const canJump = Boolean(session?.keys.space && player.jumpCharges > 0);
+
       // Out-of-bounds → eliminate
       if (nx < 0 || nx >= ARENA_SIZE || nz < 0 || nz >= ARENA_SIZE) {
         toEliminate.add(playerId);
         continue;
       }
 
-      // Trail / occupied cell → eliminate
+      // Trail / occupied cell → eliminate (unless using a jump charge to clear one cell)
       if (this.lobbyState.trail[nx][nz] !== 0) {
+        if (canJump) {
+          let jx = nx;
+          let jz = nz;
+          switch (dir) {
+            case 'N': jz -= 1; break;
+            case 'S': jz += 1; break;
+            case 'E': jx += 1; break;
+            case 'W': jx -= 1; break;
+          }
+          if (
+            jx < 0 || jx >= ARENA_SIZE || jz < 0 || jz >= ARENA_SIZE ||
+            this.lobbyState.trail[jx][jz] !== 0
+          ) {
+            toEliminate.add(playerId);
+            continue;
+          }
+          nx = jx;
+          nz = jz;
+          jumpedThisTick.add(playerId);
+        } else {
+          toEliminate.add(playerId);
+          continue;
+        }
+      }
+
+      // Don't allow landing on an occupied bike cell
+      for (const other of this.lobbyState.players) {
+        if (!other.isAlive || other.id === playerId) continue;
+        if (other.position.x === nx && other.position.z === nz) {
+          toEliminate.add(playerId);
+          break;
+        }
+      }
+      if (toEliminate.has(playerId)) {
         toEliminate.add(playerId);
         continue;
       }
@@ -308,7 +376,10 @@ export class GameLobby {
         ids.forEach(id => toEliminate.add(id));
       }
     }
-    for (const id of toEliminate) nextPos.delete(id);
+    for (const id of toEliminate) {
+      nextPos.delete(id);
+      jumpedThisTick.delete(id);
+    }
 
     // 4. Stamp old positions as trail, update positions & directions
     for (const [playerId, pos] of nextPos) {
@@ -318,6 +389,18 @@ export class GameLobby {
       this.lobbyState.trail[player.position.x][player.position.z] = session.colorIndex + 1;
       player.position = pos;
       player.direction = desiredDirs.get(playerId)!;
+      if (jumpedThisTick.has(playerId) && player.jumpCharges > 0) {
+        player.jumpCharges -= 1;
+        player.isJumping = true;
+      }
+
+      const pickupIndex = this.lobbyState.powerUps.findIndex(
+        pu => pu.type === 'jump' && pu.position.x === player.position.x && pu.position.z === player.position.z,
+      );
+      if (pickupIndex >= 0) {
+        player.jumpCharges = Math.min(MAX_JUMP_CHARGES, player.jumpCharges + 1);
+        this.lobbyState.powerUps.splice(pickupIndex, 1);
+      }
     }
 
     // 5. Eliminate crashed bikes (also mark their final cell)
@@ -339,6 +422,28 @@ export class GameLobby {
     if (alive.length <= 1) {
       if (this.gameInterval) { clearInterval(this.gameInterval); this.gameInterval = null; }
       this.endRound(alive[0] ?? null);
+      return;
+    }
+    this.maybeSpawnJumpPowerUp();
+  }
+
+  private maybeSpawnJumpPowerUp(): void {
+    if (this.moveCount % POWERUP_SPAWN_MOVE_INTERVAL !== 0) return;
+    if (this.lobbyState.powerUps.length >= MAX_JUMP_POWERUPS) return;
+    if (Math.random() > POWERUP_SPAWN_CHANCE) return;
+
+    for (let attempt = 0; attempt < 60; attempt++) {
+      const x = Math.floor(Math.random() * ARENA_SIZE);
+      const z = Math.floor(Math.random() * ARENA_SIZE);
+      if (this.lobbyState.trail[x][z] !== 0) continue;
+      if (this.lobbyState.players.some(p => p.isAlive && p.position.x === x && p.position.z === z)) continue;
+      if (this.lobbyState.powerUps.some(pu => pu.position.x === x && pu.position.z === z)) continue;
+      this.lobbyState.powerUps.push({
+        id: crypto.randomUUID(),
+        type: 'jump',
+        position: { x, z },
+      });
+      return;
     }
   }
 
@@ -416,6 +521,7 @@ export class GameLobby {
 
     this.lobbyState.status = 'waiting';
     this.lobbyState.trail = this.initTrail();
+    this.lobbyState.powerUps = [];
     this.lobbyState.gameTime = 0;
     this.lobbyState.winner = null;
     this.lobbyState.countdown = undefined;
@@ -424,13 +530,16 @@ export class GameLobby {
     this.lobbyState.roundScores = {};
     this.lobbyState.roundWinnerId = null;
     this.moveTickCounter = 0;
+    this.moveCount = 0;
 
     this.lobbyState.players.forEach((p, i) => {
-      const cfg = START_CONFIGS[i];
+      const cfg = getStartConfigs()[i];
       p.isAlive = true;
       p.score = 0;
       p.position = { x: cfg.x, z: cfg.z };
       p.direction = cfg.dir;
+      p.jumpCharges = 0;
+      p.isJumping = false;
     });
 
     this.broadcastAll({ type: 'lobby_update', lobbyState: this.lobbyState });

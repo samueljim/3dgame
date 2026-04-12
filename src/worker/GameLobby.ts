@@ -83,6 +83,8 @@ const POWERUP_SPAWN_INTERVAL = 1.2;  // seconds between spawn attempts
 const MAX_JUMP_CHARGES  = 3;
 const MAX_BOOST_CHARGES = 2;
 const PICKUP_RADIUS     = 2.8;  // world units
+/** Probability of spawning a boost (vs jump) when both are available. */
+const BOOST_SPAWN_BIAS  = 0.4;
 
 // Start positions & facing directions for up to 8 players (world coordinates)
 function getStartConfigs(): Array<{ x: number; z: number; dir: Direction }> {
@@ -405,7 +407,7 @@ export class GameLobby {
       const nz = player.position.z + dz * speed * dt;
 
       // Arena boundary (hard walls)
-      if (nx < 0 || nx > ARENA_WORLD_SIZE || nz < 0 || nz > ARENA_WORLD_SIZE) {
+      if (nx < 0 || nx >= ARENA_WORLD_SIZE || nz < 0 || nz >= ARENA_WORLD_SIZE) {
         toEliminate.add(playerId);
         continue;
       }
@@ -551,7 +553,7 @@ export class GameLobby {
     const canJ = jumpCount  < MAX_JUMP_POWERUPS;
     const canB = boostCount < MAX_BOOST_POWERUPS;
     if (!canJ && !canB) return;
-    const spawnType = (!canJ || (canB && Math.random() < 0.4)) ? 'boost' : 'jump';
+    const spawnType = (!canJ || (canB && Math.random() < BOOST_SPAWN_BIAS)) ? 'boost' : 'jump';
 
     const margin = 6;
     for (let attempt = 0; attempt < 60; attempt++) {

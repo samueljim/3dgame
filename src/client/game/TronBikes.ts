@@ -92,6 +92,8 @@ interface BikeMesh {
   startX: number;
   startZ: number;
   moveStartAt: number;
+  /** Duration (ms) to interpolate over — updated to actual inter-update interval. */
+  moveDuration: number;
   alive: boolean;
 }
 
@@ -135,6 +137,9 @@ export class TronBikesGame {
 
   // Speed level tracking
   private prevSpeedLevel = 0;
+
+  /** Timestamp of the last received server state update (ms). */
+  private lastStateUpdateAt = 0;
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -325,6 +330,7 @@ export class TronBikesGame {
       leanZ: 0,
       startX: wx, startZ: wz,
       moveStartAt: performance.now(),
+      moveDuration: TICK_RATE,
       alive: true,
     });
 
@@ -335,6 +341,13 @@ export class TronBikesGame {
 
   public updateState(newState: LobbyState): void {
     const prevPlayers = new Map(this.lobbyState.players.map(p => [p.id, p]));
+
+    // Measure actual inter-update interval for accurate interpolation
+    const now = performance.now();
+    const actualInterval = this.lastStateUpdateAt > 0
+      ? Math.min(now - this.lastStateUpdateAt, TICK_RATE * 4) // cap at 4× to handle pauses
+      : TICK_RATE;
+    this.lastStateUpdateAt = now;
 
     if (newState.speedLevel > this.prevSpeedLevel) {
       this.prevSpeedLevel = newState.speedLevel;
@@ -388,7 +401,8 @@ export class TronBikesGame {
       if (wx !== mesh.targetX || wz !== mesh.targetZ) {
         mesh.startX = mesh.group.position.x;
         mesh.startZ = mesh.group.position.z;
-        mesh.moveStartAt = performance.now();
+        mesh.moveStartAt = now;
+        mesh.moveDuration = actualInterval;
       }
       mesh.targetX = wx;
       mesh.targetZ = wz;
@@ -550,6 +564,13 @@ export class TronBikesGame {
 
   // ─── Render Loop ──────────────────────────────────────────────────────────
 
+  /** Returns the current interpolated world position for a bike, falling back to server position. */
+  private getInterpolatedBikePos(playerId: string, player: Player): { x: number; z: number } {
+    const bikeMesh = this.bikeMeshes.get(playerId);
+    if (bikeMesh) return { x: bikeMesh.group.position.x, z: bikeMesh.group.position.z };
+    return { x: player.position.x, z: player.position.z };
+  }
+
   private onResize = (): void => {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
@@ -570,7 +591,7 @@ export class TronBikesGame {
     for (const [playerId, mesh] of this.bikeMeshes) {
       if (!mesh.alive) continue;
 
-      const moveT = Math.min(1, (now - mesh.moveStartAt) / TICK_RATE);
+      const moveT = Math.min(1, (now - mesh.moveStartAt) / Math.max(1, mesh.moveDuration));
       mesh.group.position.x = mesh.startX + (mesh.targetX - mesh.startX) * moveT;
       mesh.group.position.z = mesh.startZ + (mesh.targetZ - mesh.startZ) * moveT;
 
@@ -609,8 +630,7 @@ export class TronBikesGame {
         mesh.visible = false;
         continue;
       }
-      const bx = (this.bikeMeshes.get(playerId)?.group.position.x) ?? player.position.x;
-      const bz = (this.bikeMeshes.get(playerId)?.group.position.z) ?? player.position.z;
+      const { x: bx, z: bz } = this.getInterpolatedBikePos(playerId, player);
       this.applySegmentTransform(mesh, player.trailStart.x, player.trailStart.z, bx, bz);
     }
 

@@ -108,20 +108,18 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
     };
   }, []);
 
-  const applySwipeDirection = useCallback((dir: 'N' | 'S' | 'E' | 'W') => {
+  const applySwipeTurn = useCallback((turn: 'left' | 'right') => {
     const game = gameRef.current;
     if (!game) return;
     soundRef.current.init();
-    game.setKeys({ w: false, a: false, s: false, d: false });
-    if (dir === 'N') game.setKeys({ w: true });
-    if (dir === 'S') game.setKeys({ s: true });
-    if (dir === 'E') game.setKeys({ d: true });
-    if (dir === 'W') game.setKeys({ a: true });
+    game.setKeys({ left: false, right: false });
+    if (turn === 'left') game.setKeys({ left: true });
+    if (turn === 'right') game.setKeys({ right: true });
     if (swipeReleaseTimeoutRef.current !== null) {
       window.clearTimeout(swipeReleaseTimeoutRef.current);
     }
     swipeReleaseTimeoutRef.current = window.setTimeout(() => {
-      gameRef.current?.setKeys({ w: false, a: false, s: false, d: false });
+      gameRef.current?.setKeys({ left: false, right: false });
       swipeReleaseTimeoutRef.current = null;
     }, SWIPE_KEY_RELEASE_DELAY_MS);
   }, []);
@@ -147,13 +145,12 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
       const absY = Math.abs(dy);
       const minSwipe = 18;
       if (absX >= minSwipe || absY >= minSwipe) {
-        if (absX > absY) applySwipeDirection(dx > 0 ? 'E' : 'W');
-        else applySwipeDirection(dy > 0 ? 'S' : 'N');
+        if (absX > absY) applySwipeTurn(dx > 0 ? 'right' : 'left');
       }
       ts.active = false;
       break;
     }
-  }, [applySwipeDirection]);
+  }, [applySwipeTurn]);
 
   const handleMuteToggle = useCallback(() => {
     soundRef.current.init();
@@ -291,10 +288,10 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
           </button>
           <div className="hud-controls">
             <div className="controls-title">Controls</div>
-            WASD / Arrows — Steer<br />
-            Space — Jump (purple)<br />
-            Shift — Boost (gold)<br />
-            Mobile — Swipe to steer<br />
+             A/D or ←/→ — Turn left/right<br />
+             Space — Jump (purple)<br />
+             Shift — Boost (gold)<br />
+             Mobile — Swipe left/right to turn<br />
             <span style={{ color: 'rgba(255,180,80,0.7)', fontSize: '0.65rem' }}>
               Grab pickups to charge!
             </span>

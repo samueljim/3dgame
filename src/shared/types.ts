@@ -53,13 +53,20 @@ export interface PowerUp {
   position: { x: number; z: number };
 }
 
+export interface InputKeys {
+  left: boolean;
+  right: boolean;
+  space: boolean;
+  shift: boolean;
+}
+
 // Client -> Server messages
 export type ClientMessage =
   | { type: 'join'; playerName: string }
   | { type: 'rename'; playerName: string }
   | { type: 'start_game' }
   | { type: 'restart_game' }
-  | { type: 'input'; keys: { w: boolean; a: boolean; s: boolean; d: boolean; space: boolean; shift: boolean } }
+  | { type: 'input'; keys: InputKeys }
   | { type: 'ping' };
 
 // Server -> Client messages

@@ -1,6 +1,6 @@
 import type {
   LobbyState, Player, ClientMessage, ServerMessage,
-  PlayerColor, Direction,
+  PlayerColor, Direction, InputKeys,
 } from '../shared/types';
 import {
   PLAYER_COLORS, ARENA_SIZE, TICK_RATE,
@@ -8,8 +8,23 @@ import {
   MAX_ROUNDS, MAX_PLAYERS,
 } from '../shared/types';
 
-// Opposite directions — used to prevent immediate reversals
-const DIRECTION_OPPOSITES: Record<Direction, Direction> = { N: 'S', S: 'N', E: 'W', W: 'E' };
+function turnLeft(dir: Direction): Direction {
+  switch (dir) {
+    case 'N': return 'W';
+    case 'W': return 'S';
+    case 'S': return 'E';
+    case 'E': return 'N';
+  }
+}
+
+function turnRight(dir: Direction): Direction {
+  switch (dir) {
+    case 'N': return 'E';
+    case 'E': return 'S';
+    case 'S': return 'W';
+    case 'W': return 'N';
+  }
+}
 
 const MAX_JUMP_POWERUPS = 3;
 const MAX_BOOST_POWERUPS = 3;
@@ -45,10 +60,10 @@ interface PlayerSession {
   ws: WebSocket;
   playerId: string;
   colorIndex: number; // 0-based index into PLAYER_COLORS; stored as colorIndex+1 in the trail array
-  keys: { w: boolean; a: boolean; s: boolean; d: boolean; space: boolean; shift: boolean };
+  keys: InputKeys;
   /** Buffered next turn — set immediately when a direction key is received so quick
    *  taps between move ticks are never lost. Consumed on the next move tick. */
-  pendingDirection: Direction | null;
+  pendingTurn: 'left' | 'right' | null;
 }
 
 export class GameLobby {
@@ -164,8 +179,8 @@ export class GameLobby {
     this.lobbyState.players.push(player);
     this.sessions.set(playerId, {
       ws, playerId, colorIndex,
-      keys: { w: false, a: false, s: false, d: false, space: false, shift: false },
-      pendingDirection: null,
+      keys: { left: false, right: false, space: false, shift: false },
+      pendingTurn: null,
     });
 
     this.send(ws, { type: 'joined', playerId, lobbyState: this.lobbyState });
@@ -517,23 +532,13 @@ export class GameLobby {
     session: PlayerSession,
     currentDir: Direction,
   ): Direction {
-    // Consume buffered turn first (set by handleInput immediately on key press)
-    if (session.pendingDirection !== null && session.pendingDirection !== DIRECTION_OPPOSITES[currentDir]) {
-      const dir = session.pendingDirection;
-      session.pendingDirection = null;
-      return dir;
+    if (session.pendingTurn === 'left') {
+      session.pendingTurn = null;
+      return turnLeft(currentDir);
     }
-    // Fall back to current held key state
-    // Key priority (highest first): W→North, D→East, A→West, S→South.
-    // When multiple keys are held the first non-reversing direction wins.
-    const candidates: [boolean, Direction][] = [
-      [session.keys.w, 'N'],
-      [session.keys.d, 'E'],
-      [session.keys.a, 'W'],
-      [session.keys.s, 'S'],
-    ];
-    for (const [held, dir] of candidates) {
-      if (held && dir !== DIRECTION_OPPOSITES[currentDir]) return dir;
+    if (session.pendingTurn === 'right') {
+      session.pendingTurn = null;
+      return turnRight(currentDir);
     }
     return currentDir;
   }
@@ -613,29 +618,13 @@ export class GameLobby {
     this.broadcastAll({ type: 'lobby_update', lobbyState: this.lobbyState });
   }
 
-  private handleInput(playerId: string, keys: PlayerSession['keys']): void {
+  private handleInput(playerId: string, keys: InputKeys): void {
     const session = this.sessions.get(playerId);
     if (!session) return;
-
-    // Detect which direction the new key state wants and buffer it immediately.
-    // This ensures a quick tap between move ticks is never lost.
-    const player = this.lobbyState.players.find(p => p.id === playerId);
-    if (player && player.isAlive) {
-      const candidates: [boolean, Direction][] = [
-        [keys.w, 'N'],
-        [keys.d, 'E'],
-        [keys.a, 'W'],
-        [keys.s, 'S'],
-      ];
-      for (const [held, dir] of candidates) {
-        if (held && dir !== player.direction && dir !== DIRECTION_OPPOSITES[player.direction]) {
-          // Only overwrite the buffer if this is a genuinely new turn request
-          session.pendingDirection = dir;
-          break;
-        }
-      }
-    }
-
+    const leftPressed = keys.left && !session.keys.left;
+    const rightPressed = keys.right && !session.keys.right;
+    if (leftPressed) session.pendingTurn = 'left';
+    if (rightPressed) session.pendingTurn = 'right';
     session.keys = keys;
   }
 

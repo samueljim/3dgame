@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { EffectComposer, RenderPass, EffectPass, BloomEffect, VignetteEffect } from 'postprocessing';
 import { gsap } from 'gsap';
-import type { LobbyState, Player, ClientMessage, Direction, PowerUp } from '@shared/types';
+import type { LobbyState, Player, ClientMessage, Direction, PowerUp, InputKeys } from '@shared/types';
 import {
   ARENA_SIZE,
   CELL_SIZE,
@@ -60,7 +60,7 @@ const POWERUP_FLOAT_SPEED = 4;
 const POWERUP_FLOAT_PHASE_SCALE = 0.07;
 const POWERUP_FLOAT_AMPLITUDE = 0.12;
 const MIN_MOVE_DURATION_MS = 1;
-const MIN_SEGMENT_DURATION_MS = 45;
+const MIN_SEGMENT_DURATION_MS = 80;
 
 /** Trail wall heights per speed level (taller = more dramatic). */
 const TRAIL_HEIGHTS = [1.2, 2.0, 3.2, 5.0] as const;
@@ -182,7 +182,7 @@ export class TronBikesGame {
   private minimapCtx: CanvasRenderingContext2D | null = null;
 
   // Input state
-  private keys = { w: false, a: false, s: false, d: false, space: false, shift: false };
+  private keys: InputKeys = { left: false, right: false, space: false, shift: false };
   private lastInputSent = 0;
   private keyDownHandler!: (e: KeyboardEvent) => void;
   private keyUpHandler!: (e: KeyboardEvent) => void;
@@ -372,22 +372,59 @@ export class TronBikesGame {
       metalness: 0.94,
     });
 
-    // ── Hull: slightly lower profile than before ─────────────────────────────
-    const bodyGeo = new THREE.BoxGeometry(0.46 * CELL_SIZE, 0.18 * CELL_SIZE, 0.88 * CELL_SIZE);
+    const bodyGeo = new THREE.CapsuleGeometry(0.16 * CELL_SIZE, 0.58 * CELL_SIZE, 6, 14);
     const body = new THREE.Mesh(bodyGeo, bodyMat);
-    body.position.y = 0.3; // local Y inside the group
+    body.rotation.x = Math.PI / 2;
+    body.position.y = 0.27;
 
-    // ── Rear fin (iconic Tron silhouette) ─────────────────────────────────────
-    // Thin, tall blade at the rear of the hull
-    const finGeo = new THREE.BoxGeometry(0.055 * CELL_SIZE, 0.46 * CELL_SIZE, 0.26 * CELL_SIZE);
-    const fin = new THREE.Mesh(finGeo, bodyMat);
-    fin.position.set(0, 0.5, -0.3 * CELL_SIZE); // above + behind hull centre (local space)
+    const canopy = new THREE.Mesh(
+      new THREE.SphereGeometry(0.14 * CELL_SIZE, 14, 10),
+      new THREE.MeshStandardMaterial({
+        color: 0x99c3ff,
+        emissive: colorHex,
+        emissiveIntensity: 0.38,
+        roughness: 0.06,
+        metalness: 0.86,
+      }),
+    );
+    canopy.scale.set(1.3, 0.6, 1.05);
+    canopy.position.set(0, 0.39, 0.07 * CELL_SIZE);
+
+    const stripGeo = new THREE.BoxGeometry(0.03 * CELL_SIZE, 0.07 * CELL_SIZE, 0.92 * CELL_SIZE);
+    const stripMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      emissive: colorHex,
+      emissiveIntensity: 1.6,
+      roughness: 0.2,
+      metalness: 0.55,
+    });
+    const stripL = new THREE.Mesh(stripGeo, stripMat);
+    const stripR = new THREE.Mesh(stripGeo, stripMat);
+    stripL.position.set(-0.19 * CELL_SIZE, 0.24, 0);
+    stripR.position.set(0.19 * CELL_SIZE, 0.24, 0);
+
+    const wheelGeo = new THREE.TorusGeometry(0.14 * CELL_SIZE, 0.026 * CELL_SIZE, 8, 22);
+    const wheelMat = new THREE.MeshStandardMaterial({
+      color: 0x0d1020,
+      emissive: colorHex,
+      emissiveIntensity: 0.72,
+      roughness: 0.24,
+      metalness: 0.92,
+    });
+    const rearWheel = new THREE.Mesh(wheelGeo, wheelMat);
+    rearWheel.rotation.y = Math.PI / 2;
+    rearWheel.position.set(0, 0.18, -0.31 * CELL_SIZE);
+
+    const noseGeo = new THREE.ConeGeometry(0.11 * CELL_SIZE, 0.28 * CELL_SIZE, 12);
+    const nose = new THREE.Mesh(noseGeo, bodyMat);
+    nose.rotation.x = Math.PI / 2;
+    nose.position.set(0, 0.24, 0.44 * CELL_SIZE);
 
     // ── Group ────────────────────────────────────────────────────────────────
     const group = new THREE.Group();
     group.position.set(wx, 0, wz);
     group.rotation.y = targetRotY;
-    group.add(body, fin);
+    group.add(body, canopy, stripL, stripR, rearWheel, nose);
     this.scene.add(group);
 
     // ── Point light — wide enough to glow on nearby trail ────────────────────
@@ -632,20 +669,16 @@ export class TronBikesGame {
   private setupInputHandlers(): void {
     this.keyDownHandler = (e: KeyboardEvent) => {
       switch (e.code) {
-        case 'KeyW': case 'ArrowUp':    this.keys.w = true;  e.preventDefault(); break;
-        case 'KeyS': case 'ArrowDown':  this.keys.s = true;  e.preventDefault(); break;
-        case 'KeyA': case 'ArrowLeft':  this.keys.a = true;  e.preventDefault(); break;
-        case 'KeyD': case 'ArrowRight': this.keys.d = true;  e.preventDefault(); break;
+        case 'KeyA': case 'ArrowLeft':  this.keys.left = true;  e.preventDefault(); break;
+        case 'KeyD': case 'ArrowRight': this.keys.right = true; e.preventDefault(); break;
         case 'Space':                   this.keys.space = true; e.preventDefault(); break;
         case 'ShiftLeft': case 'ShiftRight': this.keys.shift = true; e.preventDefault(); break;
       }
     };
     this.keyUpHandler = (e: KeyboardEvent) => {
       switch (e.code) {
-        case 'KeyW': case 'ArrowUp':    this.keys.w = false; break;
-        case 'KeyS': case 'ArrowDown':  this.keys.s = false; break;
-        case 'KeyA': case 'ArrowLeft':  this.keys.a = false; break;
-        case 'KeyD': case 'ArrowRight': this.keys.d = false; break;
+        case 'KeyA': case 'ArrowLeft':  this.keys.left = false; break;
+        case 'KeyD': case 'ArrowRight': this.keys.right = false; break;
         case 'Space':                   this.keys.space = false; break;
         case 'ShiftLeft': case 'ShiftRight': this.keys.shift = false; break;
       }

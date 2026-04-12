@@ -465,7 +465,6 @@ export class GameLobby {
     session: PlayerSession,
   ): boolean {
     const r2 = BIKE_RADIUS * BIKE_RADIUS;
-    const player = this.lobbyState.players.find(p => p.id === playerId)!;
 
     // ── Frozen segments ───────────────────────────────────────────────────
     for (const seg of this.lobbyState.trailSegments) {
@@ -501,7 +500,6 @@ export class GameLobby {
     // Own active segment is intentionally NOT checked
     // (the bike IS at its own tip — distance would always be 0).
 
-    void player; // suppress unused variable warning
     return false;
   }
 
@@ -591,11 +589,11 @@ export class GameLobby {
     }
 
     const maxWins = Math.ceil(this.lobbyState.maxRounds / 2);
-    const someoneWon = roundWinner &&
+    const someoneWonMatch = roundWinner &&
       (this.lobbyState.roundScores[roundWinner.id] ?? 0) >= maxWins;
     const allRoundsPlayed = this.lobbyState.currentRound >= this.lobbyState.maxRounds;
 
-    if (someoneWon || allRoundsPlayed) {
+    if (someoneWonMatch || allRoundsPlayed) {
       let matchWinner: Player | null = null;
       let topWins = -1;
       for (const p of this.lobbyState.players) {

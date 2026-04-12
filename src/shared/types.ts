@@ -12,8 +12,11 @@ export interface Player {
   isHost: boolean;
   isReady: boolean;
   isAlive: boolean;
-  position: { x: number; z: number }; // grid cell position
+  /** Bike position in world coordinates (continuous floats, not grid cells). */
+  position: { x: number; z: number };
   direction: Direction;
+  /** Start of the currently-growing trail segment (world coords). Updated on each turn. */
+  trailStart: { x: number; z: number };
   jumpCharges: number;
   isJumping: boolean;
   boostCharges: number;
@@ -23,25 +26,33 @@ export interface Player {
 
 export type LobbyStatus = 'waiting' | 'playing' | 'round_over' | 'finished';
 
+/**
+ * A frozen (completed) trail segment left behind by a bike.
+ * The currently-growing segment per player is derived from
+ * player.trailStart → player.position.
+ */
+export interface TrailSegment {
+  id: string;
+  playerId: string;
+  colorIndex: number; // 0-based index into PLAYER_COLORS
+  x1: number; z1: number; // segment start
+  x2: number; z2: number; // segment end
+}
+
 export interface LobbyState {
   lobbyId: string;
   players: Player[];
   status: LobbyStatus;
-  /**
-   * trail[x][z]:
-   *   0  = empty cell
-   *   1–8 = PLAYER_COLORS index + 1 of the bike whose wall occupies this cell
-   */
-  trail: number[][];
-  gameTime: number;      // seconds elapsed
-  winner: string | null; // player id (final match winner)
+  /** Completed trail segments for all players. */
+  trailSegments: TrailSegment[];
+  gameTime: number;
+  winner: string | null;
   countdown?: number;
-  speedLevel: number;    // 0–3, increases over time; drives bike move frequency
-  // multi-round fields
+  speedLevel: number;
   currentRound: number;
   maxRounds: number;
-  roundScores: Record<string, number>; // playerId -> round wins
-  roundWinnerId: string | null;        // winner of the most recent round
+  roundScores: Record<string, number>;
+  roundWinnerId: string | null;
   powerUps: PowerUp[];
 }
 
@@ -50,7 +61,7 @@ export type PowerUpType = 'jump' | 'boost';
 export interface PowerUp {
   id: string;
   type: PowerUpType;
-  position: { x: number; z: number };
+  position: { x: number; z: number }; // world coordinates
 }
 
 export interface InputKeys {
@@ -80,19 +91,33 @@ export type ServerMessage =
   | { type: 'error'; message: string }
   | { type: 'pong' };
 
-export const ARENA_SIZE = 80;          // grid cells per side
-export const CELL_SIZE = 1.5;          // world units per grid cell
-export const TICK_RATE = 50;           // ms per game-loop tick
-export const MAX_ROUNDS = 5;           // first to win ceil(MAX_ROUNDS/2) rounds wins the match
+/** Side length of the arena in world units. */
+export const ARENA_WORLD_SIZE = 120;
+
+export const TICK_RATE = 50;   // ms per server game-loop tick
+export const MAX_ROUNDS = 5;
 export const MAX_PLAYERS = 8;
 
-/**
- * Speed schedule: bikes advance once every SPEED_MOVE_TICKS[level] ticks.
- * Level 0 = SLOW (start), level 1 = NORMAL, level 2 = FAST, level 3 = MAX speed.
- * At TICK_RATE = 50ms: SLOW=200ms/move, NORMAL=150ms, FAST=100ms, MAX=50ms.
- * Index:                   0             1              2            3
- */
-export const SPEED_MOVE_TICKS = [4, 3, 2, 1] as const;
+/** Bike speed in world units per second, per speed level (0–3). */
+export const BIKE_SPEEDS = [16, 22, 30, 42] as const;
 
-/** Game-time thresholds (seconds) at which the speed advances to the next level. */
+/** Collision radius of each bike in world units. */
+export const BIKE_RADIUS = 0.28;
+
+/**
+ * Minimum length (world units) of the own active segment before self-collision
+ * is tested on it. Prevents instant self-crash right after a turn.
+ */
+export const TRAIL_SELF_GRACE = 3.0;
+
+/** Duration (seconds) of jump invincibility per charge. */
+export const JUMP_DURATION = 0.45;
+
+/** Speed multiplier while boost is active. */
+export const BOOST_SPEED_MULT = 1.8;
+
+/** Boost charge drain rate (charges per second while Shift is held). */
+export const BOOST_DRAIN_RATE = 0.65;
+
+/** Game-time thresholds (seconds) at which speed advances to the next level. */
 export const SPEED_LEVEL_THRESHOLDS = [0, 20, 45, 75] as const;

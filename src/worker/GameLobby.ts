@@ -1,11 +1,12 @@
 import type {
   LobbyState, Player, ClientMessage, ServerMessage,
-  PlayerColor, Direction, InputKeys,
+  PlayerColor, Direction, InputKeys, TrailSegment,
 } from '../shared/types';
 import {
-  PLAYER_COLORS, ARENA_SIZE, TICK_RATE,
-  SPEED_MOVE_TICKS, SPEED_LEVEL_THRESHOLDS,
-  MAX_ROUNDS, MAX_PLAYERS,
+  PLAYER_COLORS, ARENA_WORLD_SIZE, TICK_RATE,
+  BIKE_SPEEDS, BIKE_RADIUS, TRAIL_SELF_GRACE,
+  JUMP_DURATION, BOOST_SPEED_MULT, BOOST_DRAIN_RATE,
+  SPEED_LEVEL_THRESHOLDS, MAX_ROUNDS, MAX_PLAYERS,
 } from '../shared/types';
 
 function turnLeft(dir: Direction): Direction {
@@ -26,29 +27,75 @@ function turnRight(dir: Direction): Direction {
   }
 }
 
-const MAX_JUMP_POWERUPS = 3;
-const MAX_BOOST_POWERUPS = 3;
-const POWERUP_SPAWN_CHANCE = 0.35;
-const POWERUP_SPAWN_MOVE_INTERVAL = 4;
-const MAX_JUMP_CHARGES = 3;
-const MAX_BOOST_CHARGES = 2;
-
-function clampCell(cell: number): number {
-  return Math.max(2, Math.min(ARENA_SIZE - 3, cell));
+/** Direction unit vectors in XZ plane. */
+function dirVec(dir: Direction): { dx: number; dz: number } {
+  switch (dir) {
+    case 'N': return { dx:  0, dz: -1 };
+    case 'S': return { dx:  0, dz:  1 };
+    case 'E': return { dx:  1, dz:  0 };
+    case 'W': return { dx: -1, dz:  0 };
+  }
 }
 
-// Start positions & facing directions for up to 8 players
+/** Squared distance from point (px,pz) to line segment (x1,z1)→(x2,z2). */
+function pointSegDistSq(
+  px: number, pz: number,
+  x1: number, z1: number, x2: number, z2: number,
+): number {
+  const dx = x2 - x1, dz = z2 - z1;
+  const lenSq = dx * dx + dz * dz;
+  if (lenSq < 1e-10) {
+    const ex = px - x1, ez = pz - z1;
+    return ex * ex + ez * ez;
+  }
+  const t = Math.max(0, Math.min(1, ((px - x1) * dx + (pz - z1) * dz) / lenSq));
+  const nx = px - (x1 + t * dx);
+  const nz = pz - (z1 + t * dz);
+  return nx * nx + nz * nz;
+}
+
+/**
+ * Squared distance from point (px,pz) to line segment (x1,z1)→(x2,z2),
+ * but only testing the parameter range [0, tMax].
+ * Used to skip the last TRAIL_SELF_GRACE world-units of an own segment.
+ */
+function pointSegDistSqClamped(
+  px: number, pz: number,
+  x1: number, z1: number, x2: number, z2: number,
+  tMax: number,
+): number {
+  const dx = x2 - x1, dz = z2 - z1;
+  const lenSq = dx * dx + dz * dz;
+  if (lenSq < 1e-10) {
+    const ex = px - x1, ez = pz - z1;
+    return ex * ex + ez * ez;
+  }
+  const t = Math.max(0, Math.min(tMax, ((px - x1) * dx + (pz - z1) * dz) / lenSq));
+  const nx = px - (x1 + t * dx);
+  const nz = pz - (z1 + t * dz);
+  return nx * nx + nz * nz;
+}
+
+const MAX_JUMP_POWERUPS  = 3;
+const MAX_BOOST_POWERUPS = 3;
+const POWERUP_SPAWN_CHANCE   = 0.35;
+const POWERUP_SPAWN_INTERVAL = 1.2;  // seconds between spawn attempts
+const MAX_JUMP_CHARGES  = 3;
+const MAX_BOOST_CHARGES = 2;
+const PICKUP_RADIUS     = 2.8;  // world units
+
+// Start positions & facing directions for up to 8 players (world coordinates)
 function getStartConfigs(): Array<{ x: number; z: number; dir: Direction }> {
-  const mid = Math.floor(ARENA_SIZE / 2);
-  const q1 = clampCell(Math.floor(ARENA_SIZE * 0.25));
-  const q3 = clampCell(Math.floor(ARENA_SIZE * 0.75));
-  const low = 2;
-  const high = ARENA_SIZE - 3;
+  const mid  = ARENA_WORLD_SIZE / 2;
+  const q1   = ARENA_WORLD_SIZE * 0.25;
+  const q3   = ARENA_WORLD_SIZE * 0.75;
+  const low  = 5;
+  const high = ARENA_WORLD_SIZE - 5;
   return [
     { x: low,  z: mid, dir: 'E' },
     { x: high, z: mid, dir: 'W' },
-    { x: mid, z: low, dir: 'S' },
-    { x: mid, z: high, dir: 'N' },
+    { x: mid,  z: low, dir: 'S' },
+    { x: mid,  z: high, dir: 'N' },
     { x: low,  z: q1,  dir: 'E' },
     { x: high, z: q1,  dir: 'W' },
     { x: low,  z: q3,  dir: 'E' },
@@ -59,11 +106,20 @@ function getStartConfigs(): Array<{ x: number; z: number; dir: Direction }> {
 interface PlayerSession {
   ws: WebSocket;
   playerId: string;
-  colorIndex: number; // 0-based index into PLAYER_COLORS; stored as colorIndex+1 in the trail array
+  colorIndex: number;
   keys: InputKeys;
-  /** Buffered next turn — set immediately when a direction key is received so quick
-   *  taps between move ticks are never lost. Consumed on the next move tick. */
+  /** Buffered next turn — set immediately when a direction key fires. */
   pendingTurn: 'left' | 'right' | null;
+  /** Seconds of jump invincibility remaining. */
+  jumpTimeLeft: number;
+  /** Fractional boost-charge drain accumulator. */
+  boostDrain: number;
+  /**
+   * ID of the most-recently-frozen segment for this player.
+   * That segment gets a grace zone near its end so the bike doesn't
+   * immediately self-collide after turning.
+   */
+  gracedSegmentId: string | null;
 }
 
 export class GameLobby {
@@ -73,8 +129,7 @@ export class GameLobby {
   private gameInterval: ReturnType<typeof setInterval> | null = null;
   private lobbyId: string = '';
   private countdownTimeouts: ReturnType<typeof setTimeout>[] = [];
-  private moveTickCounter = 0;
-  private moveCount = 0;
+  private powerUpSpawnTimer = 0;
 
   constructor(state: DurableObjectState) {
     this.state = state;
@@ -86,7 +141,7 @@ export class GameLobby {
       lobbyId: this.lobbyId,
       players: [],
       status: 'waiting',
-      trail: this.initTrail(),
+      trailSegments: [],
       gameTime: 0,
       winner: null,
       speedLevel: 0,
@@ -96,10 +151,6 @@ export class GameLobby {
       roundWinnerId: null,
       powerUps: [],
     };
-  }
-
-  private initTrail(): number[][] {
-    return Array.from({ length: ARENA_SIZE }, () => new Array<number>(ARENA_SIZE).fill(0));
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -137,12 +188,12 @@ export class GameLobby {
 
   private handleMessage(ws: WebSocket, playerId: string, msg: ClientMessage): void {
     switch (msg.type) {
-      case 'join':        this.handleJoin(ws, playerId, msg.playerName); break;
-      case 'rename':      this.handleRename(playerId, msg.playerName); break;
-      case 'start_game':  this.handleStartGame(playerId); break;
+      case 'join':         this.handleJoin(ws, playerId, msg.playerName); break;
+      case 'rename':       this.handleRename(playerId, msg.playerName); break;
+      case 'start_game':   this.handleStartGame(playerId); break;
       case 'restart_game': this.handleRestartGame(playerId); break;
-      case 'input':       this.handleInput(playerId, msg.keys); break;
-      case 'ping':        this.send(ws, { type: 'pong' }); break;
+      case 'input':        this.handleInput(playerId, msg.keys); break;
+      case 'ping':         this.send(ws, { type: 'pong' }); break;
     }
   }
 
@@ -169,6 +220,7 @@ export class GameLobby {
       isAlive: true,
       position: { x: cfg.x, z: cfg.z },
       direction: cfg.dir,
+      trailStart: { x: cfg.x, z: cfg.z },
       jumpCharges: 0,
       isJumping: false,
       boostCharges: 0,
@@ -181,6 +233,9 @@ export class GameLobby {
       ws, playerId, colorIndex,
       keys: { left: false, right: false, space: false, shift: false },
       pendingTurn: null,
+      jumpTimeLeft: 0,
+      boostDrain: 0,
+      gracedSegmentId: null,
     });
 
     this.send(ws, { type: 'joined', playerId, lobbyState: this.lobbyState });
@@ -215,24 +270,30 @@ export class GameLobby {
 
   private startRound(): void {
     this.lobbyState.status = 'playing';
-    this.lobbyState.trail = this.initTrail();
+    this.lobbyState.trailSegments = [];
     this.lobbyState.powerUps = [];
     this.lobbyState.gameTime = 0;
     this.lobbyState.speedLevel = 0;
-    this.moveTickCounter = 0;
-    this.moveCount = 0;
+    this.powerUpSpawnTimer = 0;
 
-    // Reset player positions and directions
     this.lobbyState.players.forEach((p, i) => {
       const cfg = getStartConfigs()[i];
       p.isAlive = true;
-      p.position = { x: cfg.x, z: cfg.z };
-      p.direction = cfg.dir;
+      p.position   = { x: cfg.x, z: cfg.z };
+      p.trailStart = { x: cfg.x, z: cfg.z };
+      p.direction  = cfg.dir;
       p.jumpCharges = 0;
-      p.isJumping = false;
+      p.isJumping   = false;
       p.boostCharges = 0;
-      p.isBoosting = false;
+      p.isBoosting   = false;
     });
+
+    for (const session of this.sessions.values()) {
+      session.jumpTimeLeft  = 0;
+      session.boostDrain    = 0;
+      session.gracedSegmentId = null;
+      session.pendingTurn   = null;
+    }
 
     // Countdown: 3 → 2 → 1 → GO
     for (const t of this.countdownTimeouts) clearTimeout(t);
@@ -245,12 +306,10 @@ export class GameLobby {
       this.lobbyState.countdown = 2;
       this.broadcastAll({ type: 'game_state', lobbyState: this.lobbyState });
     }, 1000);
-
     const t2 = setTimeout(() => {
       this.lobbyState.countdown = 1;
       this.broadcastAll({ type: 'game_state', lobbyState: this.lobbyState });
     }, 2000);
-
     const t3 = setTimeout(() => {
       this.lobbyState.countdown = 0;
       this.broadcastAll({ type: 'game_state', lobbyState: this.lobbyState });
@@ -265,12 +324,12 @@ export class GameLobby {
 
     this.gameInterval = setInterval(() => {
       const now = Date.now();
-      const dt = now - lastTick;
-      lastTick = now;
+      const dt  = (now - lastTick) / 1000; // seconds
+      lastTick  = now;
 
-      this.lobbyState.gameTime += dt / 1000;
+      this.lobbyState.gameTime += dt;
 
-      // Advance speed level based on elapsed time
+      // Advance speed level
       let newLevel = 0;
       for (let i = SPEED_LEVEL_THRESHOLDS.length - 1; i >= 0; i--) {
         if (this.lobbyState.gameTime >= SPEED_LEVEL_THRESHOLDS[i]) {
@@ -278,270 +337,247 @@ export class GameLobby {
           break;
         }
       }
-      this.lobbyState.speedLevel = newLevel;
-      const moveTicks = SPEED_MOVE_TICKS[newLevel];
+      this.lobbyState.speedLevel = Math.min(newLevel, BIKE_SPEEDS.length - 1);
 
-      this.moveTickCounter++;
+      this.advanceBikes(dt);
 
-      if (this.moveTickCounter >= moveTicks) {
-        this.moveTickCounter = 0;
-        this.advanceBikes();
+      if (this.lobbyState.status === 'playing') {
+        this.maybeSpawnPowerUps(dt);
+        this.broadcastAll({ type: 'game_state', lobbyState: this.lobbyState });
       }
-
-      // Check win condition
-      const alivePlayers = this.lobbyState.players.filter(p => p.isAlive);
-      // Safety check: if advanceBikes() somehow left ≤1 alive player without ending the round
-      // (e.g. via disconnect), catch it here.  moveTickCounter === 0 ensures we only act
-      // immediately after a move tick, keeping game state consistent.
-      if (alivePlayers.length <= 1 && this.moveTickCounter === 0) {
-        this.endRound(alivePlayers[0] ?? null);
-        return;
-      }
-
-      this.broadcastAll({ type: 'game_state', lobbyState: this.lobbyState });
     }, TICK_RATE);
   }
 
-  private advanceBikes(): void {
-    this.moveCount += 1;
+  // ─── Core Physics ─────────────────────────────────────────────────────────
 
-    for (const player of this.lobbyState.players) {
-      player.isJumping = false;
-      player.isBoosting = false;
-    }
+  private advanceBikes(dt: number): void {
+    const toEliminate = new Set<string>();
+    const r2 = BIKE_RADIUS * BIKE_RADIUS;
 
-    // 1. Determine the direction each alive player wants to move
-    const desiredDirs = new Map<string, Direction>();
     for (const [playerId, session] of this.sessions) {
       const player = this.lobbyState.players.find(p => p.id === playerId);
       if (!player || !player.isAlive) continue;
-      desiredDirs.set(playerId, this.resolveDirection(session, player.direction));
-    }
 
-    // 2. Compute next positions & detect boundary / trail collisions
-    const nextPos = new Map<string, { x: number; z: number }>();
-    const toEliminate = new Set<string>();
-    const jumpedThisTick = new Set<string>();
-
-    for (const [playerId, dir] of desiredDirs) {
-      const player = this.lobbyState.players.find(p => p.id === playerId)!;
-      const session = this.sessions.get(playerId)!;
-      const { x, z } = player.position;
-      let nx = x, nz = z;
-      switch (dir) {
-        case 'N': nz -= 1; break;
-        case 'S': nz += 1; break;
-        case 'E': nx += 1; break;
-        case 'W': nx -= 1; break;
-      }
-      nx = (nx + ARENA_SIZE) % ARENA_SIZE;
-      nz = (nz + ARENA_SIZE) % ARENA_SIZE;
-
-      const canJump = session.keys.space && player.jumpCharges > 0;
-
-      // Trail / occupied cell → eliminate (unless using a jump charge to clear one cell)
-      if (this.lobbyState.trail[nx][nz] !== 0) {
-        if (canJump) {
-          let jx = nx;
-          let jz = nz;
-          switch (dir) {
-            case 'N': jz -= 1; break;
-            case 'S': jz += 1; break;
-            case 'E': jx += 1; break;
-            case 'W': jx -= 1; break;
-          }
-          jx = (jx + ARENA_SIZE) % ARENA_SIZE;
-          jz = (jz + ARENA_SIZE) % ARENA_SIZE;
-          if (this.lobbyState.trail[jx][jz] !== 0) {
-            toEliminate.add(playerId);
-            continue;
-          }
-          nx = jx;
-          nz = jz;
-          jumpedThisTick.add(playerId);
-        } else {
-          toEliminate.add(playerId);
-          continue;
-        }
+      // ── Timers ─────────────────────────────────────────────────────────
+      if (session.jumpTimeLeft > 0) {
+        session.jumpTimeLeft = Math.max(0, session.jumpTimeLeft - dt);
+        player.isJumping = session.jumpTimeLeft > 0;
+      } else {
+        player.isJumping = false;
       }
 
-      // Don't allow landing on an occupied bike cell
-      for (const other of this.lobbyState.players) {
-        if (!other.isAlive || other.id === playerId) continue;
-        if (other.position.x === nx && other.position.z === nz) {
-          toEliminate.add(playerId);
-          break;
-        }
-      }
-      if (toEliminate.has(playerId)) {
-        continue;
-      }
-
-      nextPos.set(playerId, { x: nx, z: nz });
-    }
-
-    // 3. Head-on collision: two bikes targeting the same empty cell
-    const cellTargets = new Map<string, string[]>();
-    for (const [id, pos] of nextPos) {
-      const key = `${pos.x},${pos.z}`;
-      if (!cellTargets.has(key)) cellTargets.set(key, []);
-      cellTargets.get(key)!.push(id);
-    }
-    for (const [, ids] of cellTargets) {
-      if (ids.length > 1) {
-        ids.forEach(id => toEliminate.add(id));
-      }
-    }
-    for (const id of toEliminate) {
-      nextPos.delete(id);
-      jumpedThisTick.delete(id);
-    }
-
-    // 4. Stamp old positions as trail, update positions & directions
-    for (const [playerId, pos] of nextPos) {
-      const player = this.lobbyState.players.find(p => p.id === playerId)!;
-      const session = this.sessions.get(playerId)!;
-      // Leave a wall at the cell the bike is vacating
-      this.lobbyState.trail[player.position.x][player.position.z] = session.colorIndex + 1;
-      player.position = pos;
-      player.direction = desiredDirs.get(playerId)!;
-      if (jumpedThisTick.has(playerId) && player.jumpCharges > 0) {
-        player.jumpCharges -= 1;
+      // Jump activation
+      if (session.keys.space && player.jumpCharges > 0 && session.jumpTimeLeft <= 0) {
+        session.jumpTimeLeft = JUMP_DURATION;
+        player.jumpCharges--;
         player.isJumping = true;
       }
 
-      this.applyPickup(player);
-    }
-
-    // 4.5  Boost double-step: players holding Shift with boostCharges get a second move
-    const boostSecondStep = new Map<string, { x: number; z: number }>();
-    for (const [playerId] of nextPos) {
-      const player = this.lobbyState.players.find(p => p.id === playerId)!;
-      const session = this.sessions.get(playerId)!;
-      if (!session.keys.shift || player.boostCharges <= 0) continue;
-
-      const dir = player.direction;
-      let bx = player.position.x, bz = player.position.z;
-      switch (dir) {
-        case 'N': bz -= 1; break;
-        case 'S': bz += 1; break;
-        case 'E': bx += 1; break;
-        case 'W': bx -= 1; break;
+      // Boost
+      if (session.keys.shift && player.boostCharges > 0) {
+        player.isBoosting = true;
+        session.boostDrain += BOOST_DRAIN_RATE * dt;
+        if (session.boostDrain >= 1) {
+          session.boostDrain -= 1;
+          player.boostCharges = Math.max(0, player.boostCharges - 1);
+        }
+      } else {
+        player.isBoosting = false;
       }
-      bx = (bx + ARENA_SIZE) % ARENA_SIZE;
-      bz = (bz + ARENA_SIZE) % ARENA_SIZE;
 
-      if (this.lobbyState.trail[bx][bz] !== 0) continue;
-      if (this.lobbyState.players.some(p => p.isAlive && p.id !== playerId && p.position.x === bx && p.position.z === bz)) continue;
+      // ── Turn ───────────────────────────────────────────────────────────
+      if (session.pendingTurn !== null) {
+        const newDir = session.pendingTurn === 'left'
+          ? turnLeft(player.direction)
+          : turnRight(player.direction);
+        session.pendingTurn = null;
+        if (newDir !== player.direction) {
+          this.freezeSegment(player, session);
+          player.direction = newDir;
+        }
+      }
 
-      boostSecondStep.set(playerId, { x: bx, z: bz });
-    }
+      // ── Movement ───────────────────────────────────────────────────────
+      const speed = BIKE_SPEEDS[this.lobbyState.speedLevel] *
+        (player.isBoosting ? BOOST_SPEED_MULT : 1);
+      const { dx, dz } = dirVec(player.direction);
+      const nx = player.position.x + dx * speed * dt;
+      const nz = player.position.z + dz * speed * dt;
 
-    // Head-on boost collisions
-    const boostTargetMap = new Map<string, string[]>();
-    for (const [id, pos] of boostSecondStep) {
-      const key = `${pos.x},${pos.z}`;
-      if (!boostTargetMap.has(key)) boostTargetMap.set(key, []);
-      boostTargetMap.get(key)!.push(id);
-    }
-    for (const [, ids] of boostTargetMap) {
-      if (ids.length > 1) ids.forEach(id => boostSecondStep.delete(id));
-    }
+      // Arena boundary (hard walls)
+      if (nx < 0 || nx > ARENA_WORLD_SIZE || nz < 0 || nz > ARENA_WORLD_SIZE) {
+        toEliminate.add(playerId);
+        continue;
+      }
 
-    for (const [playerId, boostPos] of boostSecondStep) {
-      const player = this.lobbyState.players.find(p => p.id === playerId)!;
-      const session = this.sessions.get(playerId)!;
-      this.lobbyState.trail[player.position.x][player.position.z] = session.colorIndex + 1;
-      player.position = boostPos;
-      player.boostCharges -= 1;
-      player.isBoosting = true;
+      // Trail collision (skipped while jumping)
+      if (!player.isJumping && this.collidesWithTrail(playerId, nx, nz, session)) {
+        toEliminate.add(playerId);
+        continue;
+      }
+
+      player.position = { x: nx, z: nz };
       this.applyPickup(player);
     }
 
-    // 5. Eliminate crashed bikes (also mark their final cell)
+    // Head-on collision: two bikes within 2× BIKE_RADIUS of each other
+    const alive = this.lobbyState.players.filter(p => p.isAlive && !toEliminate.has(p.id));
+    for (let i = 0; i < alive.length; i++) {
+      for (let j = i + 1; j < alive.length; j++) {
+        const a = alive[i], b = alive[j];
+        const dx = a.position.x - b.position.x;
+        const dz = a.position.z - b.position.z;
+        if (dx * dx + dz * dz < (BIKE_RADIUS * 2) ** 2) {
+          toEliminate.add(a.id);
+          toEliminate.add(b.id);
+        }
+      }
+    }
+
+    // Eliminate
     for (const playerId of toEliminate) {
       const player = this.lobbyState.players.find(p => p.id === playerId);
       if (player && player.isAlive) {
         player.isAlive = false;
-        // Mark their last cell so it's visually blocked
         const session = this.sessions.get(playerId);
-        if (session) {
-          this.lobbyState.trail[player.position.x][player.position.z] = session.colorIndex + 1;
-        }
+        if (session) this.freezeSegment(player, session);
         this.broadcastAll({ type: 'player_eliminated', playerId, playerName: player.name });
       }
     }
 
-    // 6. Re-check win condition right after advance
-    const alive = this.lobbyState.players.filter(p => p.isAlive);
-    if (alive.length <= 1) {
+    // Round-end check
+    const stillAlive = this.lobbyState.players.filter(p => p.isAlive);
+    if (stillAlive.length <= 1) {
       if (this.gameInterval) { clearInterval(this.gameInterval); this.gameInterval = null; }
-      this.endRound(alive[0] ?? null);
-      return;
+      this.endRound(stillAlive[0] ?? null);
     }
-    this.maybeSpawnPowerUps();
   }
 
-  /** Apply any power-up pickup at the player's current position. */
+  /**
+   * Test whether position (px, pz) collides with any trail segment.
+   * Own active segment is never tested (bike is its own tip).
+   * Most-recently-frozen own segment gets a grace zone near its end.
+   * All other players' segments (active + frozen) are tested fully.
+   */
+  private collidesWithTrail(
+    playerId: string,
+    px: number, pz: number,
+    session: PlayerSession,
+  ): boolean {
+    const r2 = BIKE_RADIUS * BIKE_RADIUS;
+    const player = this.lobbyState.players.find(p => p.id === playerId)!;
+
+    // ── Frozen segments ───────────────────────────────────────────────────
+    for (const seg of this.lobbyState.trailSegments) {
+      if (seg.playerId === playerId && seg.id === session.gracedSegmentId) {
+        // Own most-recently-frozen segment: skip the last TRAIL_SELF_GRACE world-units
+        const sdx = seg.x2 - seg.x1, sdz = seg.z2 - seg.z1;
+        const segLen = Math.sqrt(sdx * sdx + sdz * sdz);
+        if (segLen < 1e-6) continue;
+        const tMax = Math.max(0, 1 - TRAIL_SELF_GRACE / segLen);
+        if (tMax <= 0) continue;
+        if (pointSegDistSqClamped(px, pz, seg.x1, seg.z1, seg.x2, seg.z2, tMax) < r2) {
+          return true;
+        }
+      } else {
+        if (pointSegDistSq(px, pz, seg.x1, seg.z1, seg.x2, seg.z2) < r2) {
+          return true;
+        }
+      }
+    }
+
+    // ── Active segments of OTHER players ─────────────────────────────────
+    for (const other of this.lobbyState.players) {
+      if (other.id === playerId || !other.isAlive) continue;
+      if (pointSegDistSq(
+        px, pz,
+        other.trailStart.x, other.trailStart.z,
+        other.position.x, other.position.z,
+      ) < r2) {
+        return true;
+      }
+    }
+
+    // Own active segment is intentionally NOT checked
+    // (the bike IS at its own tip — distance would always be 0).
+
+    void player; // suppress unused variable warning
+    return false;
+  }
+
+  /**
+   * Freeze the player's current growing segment into trailSegments,
+   * then reset trailStart to the current position.
+   */
+  private freezeSegment(player: Player, session: PlayerSession): void {
+    const dx = player.position.x - player.trailStart.x;
+    const dz = player.position.z - player.trailStart.z;
+    if (dx * dx + dz * dz < 1e-10) return; // zero-length — skip
+
+    const seg: TrailSegment = {
+      id: crypto.randomUUID(),
+      playerId: player.id,
+      colorIndex: session.colorIndex,
+      x1: player.trailStart.x, z1: player.trailStart.z,
+      x2: player.position.x,   z2: player.position.z,
+    };
+    this.lobbyState.trailSegments.push(seg);
+    session.gracedSegmentId = seg.id;
+    player.trailStart = { x: player.position.x, z: player.position.z };
+  }
+
+  // ─── Power-ups ────────────────────────────────────────────────────────────
+
   private applyPickup(player: Player): void {
-    const pickupIndex = this.lobbyState.powerUps.findIndex(
-      pu => pu.position.x === player.position.x && pu.position.z === player.position.z,
-    );
-    if (pickupIndex < 0) return;
-    const pu = this.lobbyState.powerUps[pickupIndex];
-    if (pu.type === 'jump') {
-      player.jumpCharges = Math.min(MAX_JUMP_CHARGES, player.jumpCharges + 1);
-    } else if (pu.type === 'boost') {
-      player.boostCharges = Math.min(MAX_BOOST_CHARGES, player.boostCharges + 1);
-    }
-    this.lobbyState.powerUps.splice(pickupIndex, 1);
+    const r2 = PICKUP_RADIUS * PICKUP_RADIUS;
+    const idx = this.lobbyState.powerUps.findIndex(pu => {
+      const dx = pu.position.x - player.position.x;
+      const dz = pu.position.z - player.position.z;
+      return dx * dx + dz * dz < r2;
+    });
+    if (idx < 0) return;
+    const pu = this.lobbyState.powerUps[idx];
+    if (pu.type === 'jump')  player.jumpCharges  = Math.min(MAX_JUMP_CHARGES,  player.jumpCharges  + 1);
+    if (pu.type === 'boost') player.boostCharges = Math.min(MAX_BOOST_CHARGES, player.boostCharges + 1);
+    this.lobbyState.powerUps.splice(idx, 1);
   }
 
-  private maybeSpawnPowerUps(): void {
-    if (this.moveCount % POWERUP_SPAWN_MOVE_INTERVAL !== 0) return;
+  private maybeSpawnPowerUps(dt: number): void {
+    this.powerUpSpawnTimer += dt;
+    if (this.powerUpSpawnTimer < POWERUP_SPAWN_INTERVAL) return;
+    this.powerUpSpawnTimer = 0;
     if (Math.random() > POWERUP_SPAWN_CHANCE) return;
 
-    const minCell = 0;
-    const maxCell = ARENA_SIZE - 1;
-    const span = maxCell - minCell + 1;
-
-    // Decide which type to spawn; bias toward jump if there are few of each
-    const jumpCount = this.lobbyState.powerUps.filter(p => p.type === 'jump').length;
+    const jumpCount  = this.lobbyState.powerUps.filter(p => p.type === 'jump').length;
     const boostCount = this.lobbyState.powerUps.filter(p => p.type === 'boost').length;
-    const canSpawnJump = jumpCount < MAX_JUMP_POWERUPS;
-    const canSpawnBoost = boostCount < MAX_BOOST_POWERUPS;
-    if (!canSpawnJump && !canSpawnBoost) return;
-    const spawnType = (!canSpawnJump || (canSpawnBoost && Math.random() < 0.4)) ? 'boost' : 'jump';
+    const canJ = jumpCount  < MAX_JUMP_POWERUPS;
+    const canB = boostCount < MAX_BOOST_POWERUPS;
+    if (!canJ && !canB) return;
+    const spawnType = (!canJ || (canB && Math.random() < 0.4)) ? 'boost' : 'jump';
 
+    const margin = 6;
     for (let attempt = 0; attempt < 60; attempt++) {
-      const x = minCell + Math.floor(Math.random() * span);
-      const z = minCell + Math.floor(Math.random() * span);
-      if (this.lobbyState.trail[x][z] !== 0) continue;
-      if (this.lobbyState.players.some(p => p.isAlive && p.position.x === x && p.position.z === z)) continue;
-      if (this.lobbyState.powerUps.some(pu => pu.position.x === x && pu.position.z === z)) continue;
-      this.lobbyState.powerUps.push({
-        id: crypto.randomUUID(),
-        type: spawnType,
-        position: { x, z },
+      const x = margin + Math.random() * (ARENA_WORLD_SIZE - margin * 2);
+      const z = margin + Math.random() * (ARENA_WORLD_SIZE - margin * 2);
+      // Not too close to any player
+      const tooClose = this.lobbyState.players.some(p => {
+        if (!p.isAlive) return false;
+        const dx = p.position.x - x, dz = p.position.z - z;
+        return dx * dx + dz * dz < 100; // 10 w/u clearance
       });
+      if (tooClose) continue;
+      // Not too close to existing power-ups
+      const overlap = this.lobbyState.powerUps.some(pu => {
+        const dx = pu.position.x - x, dz = pu.position.z - z;
+        return dx * dx + dz * dz < 100;
+      });
+      if (overlap) continue;
+      this.lobbyState.powerUps.push({ id: crypto.randomUUID(), type: spawnType, position: { x, z } });
       return;
     }
   }
 
-  private resolveDirection(
-    session: PlayerSession,
-    currentDir: Direction,
-  ): Direction {
-    if (session.pendingTurn === 'left') {
-      session.pendingTurn = null;
-      return turnLeft(currentDir);
-    }
-    if (session.pendingTurn === 'right') {
-      session.pendingTurn = null;
-      return turnRight(currentDir);
-    }
-    return currentDir;
-  }
+  // ─── Round / Match ────────────────────────────────────────────────────────
 
   private endRound(roundWinner: Player | null): void {
     if (this.gameInterval) { clearInterval(this.gameInterval); this.gameInterval = null; }
@@ -555,11 +591,11 @@ export class GameLobby {
     }
 
     const maxWins = Math.ceil(this.lobbyState.maxRounds / 2);
-    const someoneWonMatch = roundWinner &&
+    const someoneWon = roundWinner &&
       (this.lobbyState.roundScores[roundWinner.id] ?? 0) >= maxWins;
     const allRoundsPlayed = this.lobbyState.currentRound >= this.lobbyState.maxRounds;
 
-    if (someoneWonMatch || allRoundsPlayed) {
+    if (someoneWon || allRoundsPlayed) {
       let matchWinner: Player | null = null;
       let topWins = -1;
       for (const p of this.lobbyState.players) {
@@ -572,12 +608,11 @@ export class GameLobby {
     } else {
       this.lobbyState.status = 'round_over';
       this.broadcastAll({ type: 'game_state', lobbyState: this.lobbyState });
-
-      const nextRoundTimeout = setTimeout(() => {
+      const nextRound = setTimeout(() => {
         this.lobbyState.currentRound += 1;
         this.startRound();
       }, 4000);
-      this.countdownTimeouts.push(nextRoundTimeout);
+      this.countdownTimeouts.push(nextRound);
     }
   }
 
@@ -591,7 +626,7 @@ export class GameLobby {
     this.countdownTimeouts = [];
 
     this.lobbyState.status = 'waiting';
-    this.lobbyState.trail = this.initTrail();
+    this.lobbyState.trailSegments = [];
     this.lobbyState.powerUps = [];
     this.lobbyState.gameTime = 0;
     this.lobbyState.winner = null;
@@ -600,19 +635,18 @@ export class GameLobby {
     this.lobbyState.currentRound = 0;
     this.lobbyState.roundScores = {};
     this.lobbyState.roundWinnerId = null;
-    this.moveTickCounter = 0;
-    this.moveCount = 0;
 
     this.lobbyState.players.forEach((p, i) => {
       const cfg = getStartConfigs()[i];
-      p.isAlive = true;
-      p.score = 0;
-      p.position = { x: cfg.x, z: cfg.z };
-      p.direction = cfg.dir;
-      p.jumpCharges = 0;
-      p.isJumping = false;
+      p.isAlive    = true;
+      p.score      = 0;
+      p.position   = { x: cfg.x, z: cfg.z };
+      p.trailStart = { x: cfg.x, z: cfg.z };
+      p.direction  = cfg.dir;
+      p.jumpCharges  = 0;
+      p.isJumping    = false;
       p.boostCharges = 0;
-      p.isBoosting = false;
+      p.isBoosting   = false;
     });
 
     this.broadcastAll({ type: 'lobby_update', lobbyState: this.lobbyState });
@@ -621,9 +655,9 @@ export class GameLobby {
   private handleInput(playerId: string, keys: InputKeys): void {
     const session = this.sessions.get(playerId);
     if (!session) return;
-    const leftPressed = keys.left && !session.keys.left;
+    const leftPressed  = keys.left  && !session.keys.left;
     const rightPressed = keys.right && !session.keys.right;
-    if (leftPressed) session.pendingTurn = 'left';
+    if (leftPressed)  session.pendingTurn = 'left';
     if (rightPressed) session.pendingTurn = 'right';
     session.keys = keys;
   }
@@ -635,12 +669,10 @@ export class GameLobby {
 
     this.lobbyState.players.splice(idx, 1);
 
-    // Promote new host if needed
     if (this.lobbyState.players.length > 0 && !this.lobbyState.players.some(p => p.isHost)) {
       this.lobbyState.players[0].isHost = true;
     }
 
-    // If only one player left during play, end round
     if (this.lobbyState.status === 'playing') {
       const alive = this.lobbyState.players.filter(p => p.isAlive);
       if (alive.length <= 1) {
@@ -654,7 +686,7 @@ export class GameLobby {
   }
 
   private send(ws: WebSocket, msg: ServerMessage): void {
-    try { ws.send(JSON.stringify(msg)); } catch { /* connection already closed */ }
+    try { ws.send(JSON.stringify(msg)); } catch { /* connection closed */ }
   }
 
   private broadcast(msg: ServerMessage, excludeId?: string): void {

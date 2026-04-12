@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { gsap } from 'gsap';
 import { TronBikesGame } from '../game/TronBikes';
 import { SoundManager } from '../game/SoundManager';
-import type { LobbyState, ServerMessage } from '@shared/types';
+import type { LobbyState, ServerMessage, Direction } from '@shared/types';
 import { MAX_ROUNDS, SPEED_LEVEL_THRESHOLDS } from '@shared/types';
 import musicUrl from './music.mp3';
 
@@ -14,6 +14,23 @@ interface GameCanvasProps {
 }
 
 const SWIPE_KEY_RELEASE_DELAY_MS = 100;
+
+function directionAfterTurn(dir: Direction, turn: 'left' | 'right'): Direction {
+  if (turn === 'left') {
+    switch (dir) {
+      case 'N': return 'W';
+      case 'W': return 'S';
+      case 'S': return 'E';
+      case 'E': return 'N';
+    }
+  }
+  switch (dir) {
+    case 'N': return 'E';
+    case 'E': return 'S';
+    case 'S': return 'W';
+    case 'W': return 'N';
+  }
+}
 
 export default function GameCanvas({ lobbyState: initialState, playerId, ws, onGameOver }: GameCanvasProps) {
   const canvasRef   = useRef<HTMLCanvasElement>(null);
@@ -145,12 +162,21 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
       const absY = Math.abs(dy);
       const minSwipe = 18;
       if (absX >= minSwipe || absY >= minSwipe) {
-        if (absX > absY) applySwipeTurn(dx > 0 ? 'right' : 'left');
+        const myDirection = currentState.players.find(p => p.id === playerId)?.direction;
+        if (myDirection) {
+          const swipeDir: Direction = absX > absY
+            ? (dx > 0 ? 'E' : 'W')
+            : (dy > 0 ? 'S' : 'N');
+          const leftTarget = directionAfterTurn(myDirection, 'left');
+          const rightTarget = directionAfterTurn(myDirection, 'right');
+          if (swipeDir === leftTarget) applySwipeTurn('left');
+          else if (swipeDir === rightTarget) applySwipeTurn('right');
+        }
       }
       ts.active = false;
       break;
     }
-  }, [applySwipeTurn]);
+  }, [applySwipeTurn, currentState.players, playerId]);
 
   const handleMuteToggle = useCallback(() => {
     soundRef.current.init();
@@ -288,7 +314,7 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
           </button>
           <div className="hud-controls">
             <div className="controls-title">Controls</div>
-             A/D or ←/→ — Turn left/right<br />
+            A/D or ←/→ — Turn left/right<br />
              Space — Jump (purple)<br />
              Shift — Boost (gold)<br />
              Mobile — Swipe left/right to turn<br />

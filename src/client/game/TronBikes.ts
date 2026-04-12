@@ -62,10 +62,14 @@ const POWERUP_FLOAT_AMPLITUDE = 0.12;
 const MIN_MOVE_DURATION_MS = 1;
 const MIN_SEGMENT_DURATION_MS = 80;
 
-/** Trail wall heights per speed level (taller = more dramatic). */
-const TRAIL_HEIGHTS = [1.2, 2.0, 3.2, 5.0] as const;
+/** Thin wall dimensions for trail segments (LightBike style). */
+const TRAIL_THICKNESS   = CELL_SIZE * 0.065;  // razor-thin cross-section
+const TRAIL_WALL_LENGTH = CELL_SIZE * 1.06;   // slight overlap to prevent gaps between cells
+
+/** Trail wall heights per speed level — kept close to bike height. */
+const TRAIL_HEIGHTS = [1.0, 1.05, 1.1, 1.15] as const;
 /** Y centre position for trail mesh at each speed level (height / 2). */
-const TRAIL_Y_CENTERS = [0.6, 1.0, 1.6, 2.5] as const;
+const TRAIL_Y_CENTERS = [0.5, 0.525, 0.55, 0.575] as const;
 /** Target camera FOV per speed level — wider at higher speeds. */
 const SPEED_FOV = [55, 62, 70, 80] as const;
 /** Bloom intensity to restore to (base) and what to spike to on speed-up. */
@@ -170,8 +174,10 @@ export class TronBikesGame {
   private trailMeshes: (THREE.Mesh | null)[][] = [];
   private prevTrail: number[][] = [];
 
-  // Per-speed-level trail geometries; one material per player colour
-  private trailGeos!: THREE.BoxGeometry[];
+  // Per-speed-level trail geometries (thin oriented walls)
+  private trailGeosNS!: THREE.BoxGeometry[];   // North-South aligned walls
+  private trailGeosEW!: THREE.BoxGeometry[];   // East-West aligned walls
+  private trailGeosPost!: THREE.BoxGeometry[]; // Corner / endpoint posts
   private trailMats: THREE.MeshStandardMaterial[] = [];
 
   // Trail-cell spawn flash lights
@@ -248,8 +254,10 @@ export class TronBikesGame {
       new VignetteEffect({ darkness: 0.55 }),
     ));
 
-    // Per-speed-level trail geometries
-    this.trailGeos = TRAIL_HEIGHTS.map(h => new THREE.BoxGeometry(CELL_SIZE * 0.82, h, CELL_SIZE * 0.82));
+    // Per-speed-level trail geometries — thin oriented walls
+    this.trailGeosNS   = TRAIL_HEIGHTS.map(h => new THREE.BoxGeometry(TRAIL_THICKNESS, h, TRAIL_WALL_LENGTH));
+    this.trailGeosEW   = TRAIL_HEIGHTS.map(h => new THREE.BoxGeometry(TRAIL_WALL_LENGTH, h, TRAIL_THICKNESS));
+    this.trailGeosPost = TRAIL_HEIGHTS.map(h => new THREE.BoxGeometry(TRAIL_THICKNESS, h, TRAIL_THICKNESS));
 
     // One material per player colour
     for (const colorName of PLAYER_COLORS) {
@@ -257,11 +265,9 @@ export class TronBikesGame {
       this.trailMats.push(new THREE.MeshStandardMaterial({
         color: colorHex,
         emissive: colorHex,
-        emissiveIntensity: 1.15,
-        roughness: 0.34,
-        metalness: 0.62,
-        transparent: true,
-        opacity: 0.76,
+        emissiveIntensity: 2.2,
+        roughness: 0.15,
+        metalness: 0.55,
       }));
     }
 
@@ -585,33 +591,46 @@ export class TronBikesGame {
 
   private syncTrail(trail: number[][]): void {
     const speedLevel = Math.min(this.lobbyState.speedLevel, TRAIL_HEIGHTS.length - 1);
+
+    // Collect cells that need re-evaluation: every changed cell plus its 4 neighbours,
+    // so direction-based geometry is updated for cells that gained/lost a neighbour.
+    const toUpdate = new Set<number>();
     for (let x = 0; x < ARENA_SIZE; x++) {
       const row = trail[x];
       if (!row) continue;
       for (let z = 0; z < ARENA_SIZE; z++) {
-        const cur  = row[z] ?? 0;
-        const prev = this.prevTrail[x][z];
-        if (cur === prev) continue;
+        if ((row[z] ?? 0) !== this.prevTrail[x][z]) {
+          toUpdate.add(x * ARENA_SIZE + z);
+          if (x > 0)                toUpdate.add((x - 1) * ARENA_SIZE + z);
+          if (x < ARENA_SIZE - 1)   toUpdate.add((x + 1) * ARENA_SIZE + z);
+          if (z > 0)                toUpdate.add(x * ARENA_SIZE + (z - 1));
+          if (z < ARENA_SIZE - 1)   toUpdate.add(x * ARENA_SIZE + (z + 1));
+        }
+      }
+    }
 
-        // Remove old mesh if any
-        const old = this.trailMeshes[x][z];
-        if (old) { this.scene.remove(old); this.trailMeshes[x][z] = null; }
+    for (const key of toUpdate) {
+      const x = Math.floor(key / ARENA_SIZE);
+      const z = key % ARENA_SIZE;
+      const cur     = trail[x]?.[z] ?? 0;
+      const wasNew  = cur !== this.prevTrail[x][z];
 
-        if (cur !== 0) {
-          const colorIdx = cur - 1; // 0-based
-          const mat = this.trailMats[colorIdx];
-          if (mat) {
-            const geo = this.trailGeos[speedLevel];
-            const yCenter = TRAIL_Y_CENTERS[speedLevel];
-            const m = new THREE.Mesh(geo, mat);
-            m.position.set(x * CELL_SIZE, yCenter, z * CELL_SIZE);
-            // Snappy pop-in animation
+      // Remove the existing mesh so we can replace it with the correct geometry
+      const old = this.trailMeshes[x][z];
+      if (old) { this.scene.remove(old); this.trailMeshes[x][z] = null; }
+
+      if (cur !== 0) {
+        const colorIdx = cur - 1;
+        const mat = this.trailMats[colorIdx];
+        if (mat) {
+          const geo     = this.pickTrailGeo(trail, x, z, speedLevel);
+          const yCenter = TRAIL_Y_CENTERS[speedLevel];
+          const m = new THREE.Mesh(geo, mat);
+          m.position.set(x * CELL_SIZE, yCenter, z * CELL_SIZE);
+          if (wasNew) {
+            // Pop-in scale animation only for genuinely new cells
             m.scale.set(0.01, 0.01, 0.01);
-            this.scene.add(m);
-            gsap.to(m.scale, { x: 1, y: 1, z: 1, duration: 0.14, ease: 'back.out(2)' });
-            this.trailMeshes[x][z] = m;
-
-            // Spawn a brief coloured flash light at the new cell (capped for perf)
+            gsap.to(m.scale, { x: 1, y: 1, z: 1, duration: 0.12, ease: 'back.out(2)' });
             if (this.trailFlashes.length < TRAIL_FLASH_CAP) {
               const colorName = PLAYER_COLORS[colorIdx];
               const colorHex = PLAYER_COLORS_HEX[colorName] ?? 0xffffff;
@@ -621,10 +640,32 @@ export class TronBikesGame {
               this.trailFlashes.push({ light: fl, life: TRAIL_FLASH_DURATION, maxLife: TRAIL_FLASH_DURATION });
             }
           }
+          this.scene.add(m);
+          this.trailMeshes[x][z] = m;
         }
-        this.prevTrail[x][z] = cur;
       }
+      this.prevTrail[x][z] = cur;
     }
+  }
+
+  /**
+   * Choose the correct trail wall geometry for cell (x, z) by examining
+   * same-colour neighbours: thin in one axis, full-length in the other.
+   *   N-S wall: thin in X (runs along Z)
+   *   E-W wall: thin in Z (runs along X)
+   *   Post:     thin in both (corner, single endpoint, or T-junction)
+   */
+  private pickTrailGeo(trail: number[][], x: number, z: number, speedLevel: number): THREE.BoxGeometry {
+    const cur   = trail[x]?.[z] ?? 0;
+    const sameN = z > 0              && (trail[x]?.[z - 1] ?? 0) === cur;
+    const sameS = z < ARENA_SIZE - 1 && (trail[x]?.[z + 1] ?? 0) === cur;
+    const sameE = x < ARENA_SIZE - 1 && (trail[x + 1]?.[z] ?? 0) === cur;
+    const sameW = x > 0              && (trail[x - 1]?.[z] ?? 0) === cur;
+    const ns = sameN || sameS;
+    const ew = sameE || sameW;
+    if (ns && !ew) return this.trailGeosNS[speedLevel];
+    if (ew && !ns) return this.trailGeosEW[speedLevel];
+    return this.trailGeosPost[speedLevel];
   }
 
   private syncPowerUps(powerUps: PowerUp[]): void {
@@ -778,12 +819,12 @@ export class TronBikesGame {
     for (const [playerId, mesh] of this.bikeMeshes) {
       if (!mesh.alive) continue;
 
-      // Position (time-based smoothing between discrete server cells)
+      // Position — linear (constant speed) interpolation between server-authoritative cells.
+      // Linear motion feels like a real vehicle; smoothstep caused visible slow-down at segment ends.
       const safeMoveDuration = Math.max(MIN_MOVE_DURATION_MS, mesh.moveDuration);
       const moveT = Math.min(1, (now - mesh.moveStartAt) / safeMoveDuration);
-      const smoothMoveT = moveT * moveT * (3 - 2 * moveT);
-      mesh.group.position.x = mesh.startX + (mesh.targetX - mesh.startX) * smoothMoveT;
-      mesh.group.position.z = mesh.startZ + (mesh.targetZ - mesh.startZ) * smoothMoveT;
+      mesh.group.position.x = mesh.startX + (mesh.targetX - mesh.startX) * moveT;
+      mesh.group.position.z = mesh.startZ + (mesh.targetZ - mesh.startZ) * moveT;
       const player = playerById.get(playerId);
       const jumpY = player?.isJumping ? 0.65 : 0;
       mesh.group.position.y += (jumpY - mesh.group.position.y) * Math.min(1, dt * 12);
@@ -971,7 +1012,9 @@ export class TronBikesGame {
     }
     this.powerUpMeshes.clear();
     this.trailFlashes.length = 0;
-    for (const geo of this.trailGeos) geo.dispose();
+    for (const geo of this.trailGeosNS) geo.dispose();
+    for (const geo of this.trailGeosEW) geo.dispose();
+    for (const geo of this.trailGeosPost) geo.dispose();
     for (const mat of this.trailMats) mat.dispose();
     this.renderer.dispose();
   }

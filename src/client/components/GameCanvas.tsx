@@ -315,9 +315,9 @@ export default function GameCanvas({ lobbyState: initialState, playerId, ws, onG
           <div className="hud-controls">
             <div className="controls-title">Controls</div>
             A/D or ←/→ — Turn left/right<br />
-             Space — Jump (purple)<br />
-             Shift — Boost (gold)<br />
-             Mobile — Swipe left/right to turn<br />
+            Space — Jump (purple)<br />
+            Shift — Boost (gold)<br />
+            Mobile — Swipe left/right to turn<br />
             <span style={{ color: 'rgba(255,180,80,0.7)', fontSize: '0.65rem' }}>
               Grab pickups to charge!
             </span>

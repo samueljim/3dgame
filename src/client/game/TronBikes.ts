@@ -28,12 +28,12 @@ const ARENA_HALF = ARENA_WORLD_SIZE / 2;
 const INPUT_THROTTLE_MS = 40;
 
 /** Rotation interpolation spring. */
-const ROT_INTERP_BASE    = 0.008;
+const ROT_INTERP_BASE    = 0.22;
 const INTERP_TARGET_FPS  = 60;
-const CAMERA_INTERP_BASE = 0.03;
+const CAMERA_INTERP_BASE = 0.5;
 
 const CAMERA_FOLLOW_DISTANCE = 12.6;
-const CAMERA_HEIGHT          = 4.65;
+const CAMERA_HEIGHT          = 5.3;
 const CAMERA_LOOK_AHEAD      = 5.85;
 
 const POWERUP_SIZE           = 0.34;
